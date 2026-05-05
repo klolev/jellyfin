@@ -483,4 +483,199 @@ public sealed class FederationLibraryPublisherTests : IAsyncLifetime, IDisposabl
         Assert.Equal(2, rows.Count);
         Assert.All(rows, r => Assert.Equal(localId, r.BaseItemId));
     }
+
+    // ====================================================================
+    // Concurrent adds / race conditions with virtual items
+    // ====================================================================
+
+    [Fact]
+    public async Task ConcurrentAdds_SameProviderIds_BothPublishWithoutCrash()
+    {
+        // Two local movies added nearly simultaneously with the same IMDB ID. Both should
+        // reconcile and publish without throwing. The reconciler should tolerate the library
+        // query returning both (or neither) virtuals since by the time the second runs the
+        // virtual may already be gone.
+        var movieA = CreateMovie("The Matrix", "tt0133093");
+        var movieB = CreateMovie("The Matrix", "tt0133093");
+
+        // No virtuals to reconcile — just ensure concurrent ItemAdded doesn't deadlock or crash.
+        _libraryManagerMock
+            .Setup(m => m.GetItemList(It.IsAny<InternalItemsQuery>()))
+            .Returns(new List<BaseItem>());
+
+        RaiseItemAdded(movieA);
+        RaiseItemAdded(movieB);
+
+        await Task.Delay(300);
+
+        await using var db = CreateDbContext();
+        var count = await db.FederationOutboxActivities.CountAsync();
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public async Task ConcurrentAdd_LocalAndVirtual_LocalWins_VirtualNotPublished()
+    {
+        // Simulates a race: a peer's ingested item creates a virtual, and simultaneously
+        // the user's library scan adds the same movie locally. The virtual gets an ItemAdded
+        // event too, but it should be suppressed (ap:// prefix detection).
+        var virtualMovie = CreateMovie("Inception", "tt1375666");
+        virtualMovie.ExternalId = "ap://peer.example/Items/inception";
+
+        var localMovie = CreateMovie("Inception", "tt1375666");
+        var localId = localMovie.Id;
+
+        await using (var db = CreateDbContext())
+        {
+            var peer = new FederationActor("https://peer.example/actor", "https://peer.example/inbox", "https://peer.example/outbox", "pubkey");
+            await db.FederationActors.AddAsync(peer);
+            await db.SaveChangesAsync();
+            await db.FederationIngestedItems.AddAsync(new FederationIngestedItem(virtualMovie.Id, peer.Id, Guid.NewGuid()));
+            await db.SaveChangesAsync();
+        }
+
+        _libraryManagerMock
+            .Setup(m => m.GetItemList(It.Is<InternalItemsQuery>(q => q.HasAnyProviderId != null && q.HasAnyProviderId.Count > 0)))
+            .Returns(new List<BaseItem> { virtualMovie, localMovie });
+
+        var deletedItems = new List<BaseItem>();
+        _libraryManagerMock
+            .Setup(m => m.DeleteItem(It.IsAny<BaseItem>(), It.IsAny<DeleteOptions>()))
+            .Callback<BaseItem, DeleteOptions>((item, _) => deletedItems.Add(item));
+
+        // Fire both events concurrently — virtual add and local add
+        RaiseItemAdded(virtualMovie);
+        RaiseItemAdded(localMovie);
+
+        await Task.Delay(300);
+
+        // Virtual's add should not have published (IsVirtualFederatedItem returns true).
+        // Local's add should have published exactly once.
+        await using var db2 = CreateDbContext();
+        var activities = await db2.FederationOutboxActivities.ToListAsync();
+        Assert.Single(activities);
+        Assert.Contains("Inception", activities[0].ActivityJson, StringComparison.Ordinal);
+
+        // Virtual was reconciled away by the local item add.
+        Assert.Contains(deletedItems, d => d.Id.Equals(virtualMovie.Id));
+
+        // FederationIngestedItem re-pointed to local.
+        var row = await db2.FederationIngestedItems.SingleAsync();
+        Assert.Equal(localId, row.BaseItemId);
+    }
+
+    [Fact]
+    public async Task ConcurrentAdds_MultipleLocalSameProviderIds_NoExceptionOnDoubleReconcile()
+    {
+        // Edge case: two local items with the same provider IDs are added concurrently
+        // (e.g. a library scan picks up the same file from two paths briefly). Both will
+        // try to reconcile against the same virtual. The second one should find the virtual
+        // already gone and gracefully continue.
+        var virtualMovie = CreateMovie("Dune", "tt1160419");
+        virtualMovie.ExternalId = "ap://peer.example/Items/dune";
+
+        var localA = CreateMovie("Dune", "tt1160419");
+        var localB = CreateMovie("Dune", "tt1160419");
+
+        await using (var db = CreateDbContext())
+        {
+            var peer = new FederationActor("https://peer.example/actor", "https://peer.example/inbox", "https://peer.example/outbox", "pubkey");
+            await db.FederationActors.AddAsync(peer);
+            await db.SaveChangesAsync();
+            await db.FederationIngestedItems.AddAsync(new FederationIngestedItem(virtualMovie.Id, peer.Id, Guid.NewGuid()));
+            await db.SaveChangesAsync();
+        }
+
+        var callCount = 0;
+        _libraryManagerMock
+            .Setup(m => m.GetItemList(It.Is<InternalItemsQuery>(q => q.HasAnyProviderId != null && q.HasAnyProviderId.Count > 0)))
+            .Returns(() =>
+            {
+                // First call sees the virtual; second call doesn't (already deleted).
+                Interlocked.Increment(ref callCount);
+                return callCount == 1
+                    ? new List<BaseItem> { virtualMovie, localA, localB }
+                    : new List<BaseItem> { localA, localB };
+            });
+
+        _libraryManagerMock
+            .Setup(m => m.DeleteItem(It.IsAny<BaseItem>(), It.IsAny<DeleteOptions>()));
+
+        // Fire both adds
+        RaiseItemAdded(localA);
+        RaiseItemAdded(localB);
+
+        await Task.Delay(300);
+
+        // Both should publish without crashing. At least 2 outbox entries.
+        await using var db2 = CreateDbContext();
+        var count = await db2.FederationOutboxActivities.CountAsync();
+        Assert.True(count >= 2, $"Expected at least 2 outbox activities, got {count}");
+    }
+
+    [Fact]
+    public async Task ItemAdded_LocalWithNoProviderIds_SkipsReconcileStillPublishes()
+    {
+        // Items without provider IDs can't match any virtual items. Reconcile should be
+        // a no-op, but the Create activity should still be published.
+        var movie = new Movie
+        {
+            Name = "Home Video",
+            Id = Guid.NewGuid(),
+            ProductionYear = 2024,
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        };
+
+        // GetItemList should never be called since ProviderIds is empty
+        _libraryManagerMock
+            .Setup(m => m.GetItemList(It.IsAny<InternalItemsQuery>()))
+            .Throws(new InvalidOperationException("Should not be called"));
+
+        RaiseItemAdded(movie);
+        await Task.Delay(150);
+
+        await using var db = CreateDbContext();
+        var activity = await db.FederationOutboxActivities.FirstOrDefaultAsync();
+        Assert.NotNull(activity);
+        Assert.Contains("Home Video", activity.ActivityJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReconcileFailure_DoesNotPreventPublish()
+    {
+        // If reconciliation throws (e.g. DB transient error), the Create activity should
+        // still be published. The publisher wraps reconcile in its own try/catch.
+        var movie = CreateMovie("Resilient Movie", "tt7777777");
+
+        _libraryManagerMock
+            .Setup(m => m.GetItemList(It.IsAny<InternalItemsQuery>()))
+            .Throws(new InvalidOperationException("Simulated DB failure"));
+
+        RaiseItemAdded(movie);
+        await Task.Delay(150);
+
+        await using var db = CreateDbContext();
+        var activity = await db.FederationOutboxActivities.FirstOrDefaultAsync();
+        Assert.NotNull(activity);
+        Assert.Contains("Resilient Movie", activity.ActivityJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StopAsync_CancelsPendingPublish()
+    {
+        // After StopAsync, no new events should be processed. We verify by stopping the
+        // publisher, then raising an event and checking that nothing was published.
+        await _sut.StopAsync(CancellationToken.None);
+
+        var movie = CreateMovie("Late Movie", "tt8888888");
+        _libraryManagerMock.Raise(m => m.ItemAdded += null, _libraryManagerMock.Object, new ItemChangeEventArgs { Item = movie });
+
+        await Task.Delay(150);
+
+        await using var db = CreateDbContext();
+        Assert.Equal(0, await db.FederationOutboxActivities.CountAsync());
+
+        // Re-start for DisposeAsync
+        await _sut.StartAsync(CancellationToken.None);
+    }
 }
