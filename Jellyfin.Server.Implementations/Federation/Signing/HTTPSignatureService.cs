@@ -260,47 +260,37 @@ public class HTTPSignatureService : IFederationSigningService
 
     private static bool VerifyContentDigest(string header, byte[] body)
     {
-        // RFC 9530 Content-Digest format: algorithm=:base64-value:
-        // We support sha-256 and sha-512.
-        var parts = header.Split('=', 2);
-        if (parts.Length != 2)
+        // Content-Digest is an RFC 8941 Dictionary: each member's key is the algorithm name and
+        // its value is a byte-sequence containing the hash. Using SfvParser avoids fragile manual
+        // splitting that would break if an algorithm name ever contained '='.
+        if (SfvParser.ParseDictionary(header, out var dict) != null || dict.Count == 0)
         {
             return false;
         }
 
-        var algorithmName = parts[0].Trim().ToLowerInvariant();
-        var encodedValue = parts[1].Trim();
-
-        // Strip the leading/trailing colons per RFC 8941 byte-sequence format
-        if (encodedValue.Length < 2 || encodedValue[0] != ':' || encodedValue[^1] != ':')
+        foreach (var (algorithmName, member) in dict)
         {
-            return false;
+            if (member.Value is not ReadOnlyMemory<byte> expectedHash)
+            {
+                continue;
+            }
+
+            byte[] actualHash = algorithmName switch
+            {
+                "sha-256" => SHA256.HashData(body),
+                "sha-512" => SHA512.HashData(body),
+                _ => Array.Empty<byte>()
+            };
+
+            if (actualHash.Length == 0)
+            {
+                continue;
+            }
+
+            return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash.Span);
         }
 
-        var base64Value = encodedValue[1..^1];
-        byte[] expectedHash;
-        try
-        {
-            expectedHash = Convert.FromBase64String(base64Value);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-
-        byte[] actualHash = algorithmName switch
-        {
-            "sha-256" => SHA256.HashData(body),
-            "sha-512" => SHA512.HashData(body),
-            _ => Array.Empty<byte>()
-        };
-
-        if (actualHash.Length == 0)
-        {
-            return false;
-        }
-
-        return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
+        return false;
     }
 
     /// <summary>

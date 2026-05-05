@@ -68,22 +68,31 @@ public class VideoStreamService : IVideoStreamService
         bool isHeadRequest,
         CancellationToken cancellationToken)
     {
-        // CTS lifecycle is managed internally.
+        // CTS lifecycle: ownership transfers to GetTranscodedFile on the transcode path;
+        // all other paths (including exceptions) dispose it here.
         var cancellationTokenSource = new CancellationTokenSource();
-
-        var state = await StreamingHelpers.GetStreamingState(
-                request,
-                httpContext,
-                _mediaSourceManager,
-                _userManager,
-                _libraryManager,
-                _serverConfigurationManager,
-                _mediaEncoder,
-                _encodingHelper,
-                _transcodeManager,
-                JobType,
-                cancellationTokenSource.Token)
-            .ConfigureAwait(false);
+        StreamState state;
+        try
+        {
+            state = await StreamingHelpers.GetStreamingState(
+                    request,
+                    httpContext,
+                    _mediaSourceManager,
+                    _userManager,
+                    _libraryManager,
+                    _serverConfigurationManager,
+                    _mediaEncoder,
+                    _encodingHelper,
+                    _transcodeManager,
+                    JobType,
+                    cancellationTokenSource.Token)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            cancellationTokenSource.Dispose();
+            throw;
+        }
 
         if (request.Static && state.DirectStreamProvider is not null)
         {
