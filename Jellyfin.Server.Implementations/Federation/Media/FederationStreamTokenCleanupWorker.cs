@@ -1,6 +1,8 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Federation.Configuration;
 using MediaBrowser.Controller.Federation.Media;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,24 +19,33 @@ public sealed class FederationStreamTokenCleanupWorker : BackgroundService
     private static readonly TimeSpan SweepInterval = TimeSpan.FromHours(1);
 
     private readonly IFederationStreamTokenService _tokenService;
+    private readonly IConfigurationManager _configManager;
     private readonly ILogger<FederationStreamTokenCleanupWorker> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FederationStreamTokenCleanupWorker"/> class.
     /// </summary>
     /// <param name="tokenService">Instance of the <see cref="IFederationStreamTokenService"/> interface.</param>
+    /// <param name="configManager">Instance of the <see cref="IConfigurationManager"/> interface.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{FederationStreamTokenCleanupWorker}"/> interface.</param>
     public FederationStreamTokenCleanupWorker(
         IFederationStreamTokenService tokenService,
+        IConfigurationManager configManager,
         ILogger<FederationStreamTokenCleanupWorker> logger)
     {
         _tokenService = tokenService;
+        _configManager = configManager;
         _logger = logger;
     }
 
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_configManager.GetFederationConfiguration().Enabled)
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

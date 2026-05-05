@@ -64,18 +64,20 @@ public sealed class FederationActorQueueWorker : BackgroundService
     /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_configManager.GetFederationConfiguration().Enabled)
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (_configManager.GetFederationConfiguration().Enabled)
+            try
             {
-                try
-                {
-                    await ProcessReadyQueuesAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogError(ex, "Error processing federation actor queues");
-                }
+                await ProcessReadyQueuesAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Error processing federation actor queues");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(PollIntervalSeconds), stoppingToken).ConfigureAwait(false);

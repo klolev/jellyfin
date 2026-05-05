@@ -25,6 +25,8 @@ public class FederationLibraryIngester : IFederationLibraryIngester
     private const string ExternalIdPrefix = "ap://";
     private const string FederatedRootExternalId = ExternalIdPrefix + "federated-root";
 
+    private static readonly SemaphoreSlim FolderCreationLock = new(1, 1);
+
     private readonly ILibraryManager _libraryManager;
     private readonly IDbContextFactory<JellyfinDbContext> _dbProvider;
     private readonly ILogger<FederationLibraryIngester> _logger;
@@ -156,7 +158,7 @@ public class FederationLibraryIngester : IFederationLibraryIngester
             return;
         }
 
-        var actorFolder = EnsureActorFolder(sourceActor);
+        var actorFolder = await EnsureActorFolderAsync(sourceActor, cancellationToken).ConfigureAwait(false);
         var movie = new Movie
         {
             Id = Guid.NewGuid(),
@@ -274,31 +276,39 @@ public class FederationLibraryIngester : IFederationLibraryIngester
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private Folder EnsureActorFolder(FederationActor sourceActor)
+    private async Task<Folder> EnsureActorFolderAsync(FederationActor sourceActor, CancellationToken cancellationToken)
     {
-        var root = EnsureFederatedRoot();
-
-        var actorExternalId = ExternalIdPrefix + sourceActor.Url;
-        var actorFolder = _libraryManager
-            .QueryItems(new InternalItemsQuery { ExternalId = actorExternalId })
-            .Items
-            .OfType<Folder>()
-            .FirstOrDefault();
-        if (actorFolder is not null)
+        await FolderCreationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
+            var root = EnsureFederatedRoot();
+
+            var actorExternalId = ExternalIdPrefix + sourceActor.Url;
+            var actorFolder = _libraryManager
+                .QueryItems(new InternalItemsQuery { ExternalId = actorExternalId })
+                .Items
+                .OfType<Folder>()
+                .FirstOrDefault();
+            if (actorFolder is not null)
+            {
+                return actorFolder;
+            }
+
+            actorFolder = new Folder
+            {
+                Id = Guid.NewGuid(),
+                Name = GetHostname(sourceActor.Url),
+                ExternalId = actorExternalId,
+                IsVirtualItem = true,
+                ParentId = root.Id
+            };
+            _libraryManager.CreateItem(actorFolder, root);
             return actorFolder;
         }
-
-        actorFolder = new Folder
+        finally
         {
-            Id = Guid.NewGuid(),
-            Name = GetHostname(sourceActor.Url),
-            ExternalId = actorExternalId,
-            IsVirtualItem = true,
-            ParentId = root.Id
-        };
-        _libraryManager.CreateItem(actorFolder, root);
-        return actorFolder;
+            FolderCreationLock.Release();
+        }
     }
 
     private Folder EnsureFederatedRoot()
