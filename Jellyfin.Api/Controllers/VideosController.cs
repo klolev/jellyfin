@@ -10,6 +10,7 @@ using Jellyfin.Api.Attributes;
 using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
 using Jellyfin.Api.ModelBinders;
+using Jellyfin.Api.Services;
 using Jellyfin.Extensions;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Common.Configuration;
@@ -41,13 +42,7 @@ public class VideosController : BaseJellyfinApiController
     private readonly IUserManager _userManager;
     private readonly IDtoService _dtoService;
     private readonly IMediaSourceManager _mediaSourceManager;
-    private readonly IServerConfigurationManager _serverConfigurationManager;
-    private readonly IMediaEncoder _mediaEncoder;
-    private readonly ITranscodeManager _transcodeManager;
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly EncodingHelper _encodingHelper;
-
-    private readonly TranscodingJobType _transcodingJobType = TranscodingJobType.Progressive;
+    private readonly IVideoStreamService _videoStreamService;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="VideosController"/> class.
@@ -56,31 +51,19 @@ public class VideosController : BaseJellyfinApiController
     /// <param name="userManager">Instance of the <see cref="IUserManager"/> interface.</param>
     /// <param name="dtoService">Instance of the <see cref="IDtoService"/> interface.</param>
     /// <param name="mediaSourceManager">Instance of the <see cref="IMediaSourceManager"/> interface.</param>
-    /// <param name="serverConfigurationManager">Instance of the <see cref="IServerConfigurationManager"/> interface.</param>
-    /// <param name="mediaEncoder">Instance of the <see cref="IMediaEncoder"/> interface.</param>
-    /// <param name="transcodeManager">Instance of the <see cref="ITranscodeManager"/> interface.</param>
-    /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
-    /// <param name="encodingHelper">Instance of <see cref="EncodingHelper"/>.</param>
+    /// <param name="videoStreamService">The progressive video stream service.</param>
     public VideosController(
         ILibraryManager libraryManager,
         IUserManager userManager,
         IDtoService dtoService,
         IMediaSourceManager mediaSourceManager,
-        IServerConfigurationManager serverConfigurationManager,
-        IMediaEncoder mediaEncoder,
-        ITranscodeManager transcodeManager,
-        IHttpClientFactory httpClientFactory,
-        EncodingHelper encodingHelper)
+        IVideoStreamService videoStreamService)
     {
         _libraryManager = libraryManager;
         _userManager = userManager;
         _dtoService = dtoService;
         _mediaSourceManager = mediaSourceManager;
-        _serverConfigurationManager = serverConfigurationManager;
-        _mediaEncoder = mediaEncoder;
-        _transcodeManager = transcodeManager;
-        _httpClientFactory = httpClientFactory;
-        _encodingHelper = encodingHelper;
+        _videoStreamService = videoStreamService;
     }
 
     /// <summary>
@@ -365,8 +348,6 @@ public class VideosController : BaseJellyfinApiController
         [FromQuery] bool enableAudioVbrEncoding = true)
     {
         var isHeadRequest = Request.Method == System.Net.WebRequestMethods.Http.Head;
-        // CTS lifecycle is managed internally.
-        var cancellationTokenSource = new CancellationTokenSource();
         var streamingRequest = new VideoRequestDto
         {
             Id = itemId,
@@ -421,72 +402,7 @@ public class VideosController : BaseJellyfinApiController
             EnableAudioVbrEncoding = enableAudioVbrEncoding
         };
 
-        var state = await StreamingHelpers.GetStreamingState(
-                streamingRequest,
-                HttpContext,
-                _mediaSourceManager,
-                _userManager,
-                _libraryManager,
-                _serverConfigurationManager,
-                _mediaEncoder,
-                _encodingHelper,
-                _transcodeManager,
-                _transcodingJobType,
-                cancellationTokenSource.Token)
-            .ConfigureAwait(false);
-
-        if (@static.HasValue && @static.Value && state.DirectStreamProvider is not null)
-        {
-            var liveStreamInfo = _mediaSourceManager.GetLiveStreamInfo(streamingRequest.LiveStreamId);
-            if (liveStreamInfo is null)
-            {
-                return NotFound();
-            }
-
-            var liveStream = new ProgressiveFileStream(liveStreamInfo.GetStream());
-            // TODO (moved from MediaBrowser.Api): Don't hardcode contentType
-            return File(liveStream, MimeTypes.GetMimeType("file.ts"));
-        }
-
-        // Static remote stream
-        if (@static.HasValue && @static.Value && state.InputProtocol == MediaProtocol.Http)
-        {
-            var httpClient = _httpClientFactory.CreateClient(NamedClient.Default);
-            return await FileStreamResponseHelpers.GetStaticRemoteStreamResult(state, httpClient, HttpContext).ConfigureAwait(false);
-        }
-
-        if (@static.HasValue && @static.Value && state.InputProtocol != MediaProtocol.File)
-        {
-            return BadRequest($"Input protocol {state.InputProtocol} cannot be streamed statically");
-        }
-
-        // Static stream
-        if (@static.HasValue && @static.Value && !(state.MediaSource.VideoType == VideoType.BluRay || state.MediaSource.VideoType == VideoType.Dvd))
-        {
-            var contentType = state.GetMimeType("." + state.OutputContainer, false) ?? state.GetMimeType(state.MediaPath);
-
-            if (state.MediaSource.IsInfiniteStream)
-            {
-                var liveStream = new ProgressiveFileStream(state.MediaPath, null, _transcodeManager);
-                return File(liveStream, contentType);
-            }
-
-            return FileStreamResponseHelpers.GetStaticFileResult(
-                state.MediaPath,
-                contentType);
-        }
-
-        // Need to start ffmpeg (because media can't be returned directly)
-        var encodingOptions = _serverConfigurationManager.GetEncodingOptions();
-        var ffmpegCommandLineArguments = _encodingHelper.GetProgressiveVideoFullCommandLine(state, encodingOptions, EncoderPreset.superfast);
-        return await FileStreamResponseHelpers.GetTranscodedFile(
-            state,
-            isHeadRequest,
-            HttpContext,
-            _transcodeManager,
-            ffmpegCommandLineArguments,
-            _transcodingJobType,
-            cancellationTokenSource).ConfigureAwait(false);
+        return await _videoStreamService.StreamAsync(streamingRequest, HttpContext, isHeadRequest, HttpContext.RequestAborted).ConfigureAwait(false);
     }
 
     /// <summary>

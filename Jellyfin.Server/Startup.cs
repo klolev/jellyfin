@@ -16,6 +16,8 @@ using Jellyfin.Networking.HappyEyeballs;
 using Jellyfin.Server.Extensions;
 using Jellyfin.Server.HealthChecks;
 using Jellyfin.Server.Implementations.Extensions;
+using Jellyfin.Server.Implementations.Federation;
+using Jellyfin.Server.Implementations.Federation.Media;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Extensions;
@@ -133,6 +135,10 @@ namespace Jellyfin.Server
             services.AddHostedService<LibraryChangedNotifier>();
             services.AddHostedService<UserDataChangeNotifier>();
             services.AddHostedService<RecordingNotifier>();
+            services.AddHostedService<FederationConfigurationValidator>();
+            services.AddHostedService<FederationActorQueueWorker>();
+            services.AddHostedService<FederationLibraryPublisher>();
+            services.AddHostedService<FederationStreamTokenCleanupWorker>();
         }
 
         /// <summary>

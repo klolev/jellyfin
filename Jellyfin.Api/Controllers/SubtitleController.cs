@@ -14,12 +14,12 @@ using Jellyfin.Api.Attributes;
 using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
 using Jellyfin.Api.Models.SubtitleDtos;
+using Jellyfin.Api.Services;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
-using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Controller.Subtitles;
 using MediaBrowser.Model.Entities;
@@ -43,11 +43,11 @@ public class SubtitleController : BaseJellyfinApiController
     private readonly IServerConfigurationManager _serverConfigurationManager;
     private readonly ILibraryManager _libraryManager;
     private readonly ISubtitleManager _subtitleManager;
-    private readonly ISubtitleEncoder _subtitleEncoder;
     private readonly IMediaSourceManager _mediaSourceManager;
     private readonly IProviderManager _providerManager;
     private readonly IFileSystem _fileSystem;
     private readonly ILogger<SubtitleController> _logger;
+    private readonly ISubtitleStreamService _subtitleStreamService;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SubtitleController"/> class.
@@ -55,29 +55,29 @@ public class SubtitleController : BaseJellyfinApiController
     /// <param name="serverConfigurationManager">Instance of <see cref="IServerConfigurationManager"/> interface.</param>
     /// <param name="libraryManager">Instance of <see cref="ILibraryManager"/> interface.</param>
     /// <param name="subtitleManager">Instance of <see cref="ISubtitleManager"/> interface.</param>
-    /// <param name="subtitleEncoder">Instance of <see cref="ISubtitleEncoder"/> interface.</param>
     /// <param name="mediaSourceManager">Instance of <see cref="IMediaSourceManager"/> interface.</param>
     /// <param name="providerManager">Instance of <see cref="IProviderManager"/> interface.</param>
     /// <param name="fileSystem">Instance of <see cref="IFileSystem"/> interface.</param>
     /// <param name="logger">Instance of <see cref="ILogger{SubtitleController}"/> interface.</param>
+    /// <param name="subtitleStreamService">The shared subtitle stream service.</param>
     public SubtitleController(
         IServerConfigurationManager serverConfigurationManager,
         ILibraryManager libraryManager,
         ISubtitleManager subtitleManager,
-        ISubtitleEncoder subtitleEncoder,
         IMediaSourceManager mediaSourceManager,
         IProviderManager providerManager,
         IFileSystem fileSystem,
-        ILogger<SubtitleController> logger)
+        ILogger<SubtitleController> logger,
+        ISubtitleStreamService subtitleStreamService)
     {
         _serverConfigurationManager = serverConfigurationManager;
         _libraryManager = libraryManager;
         _subtitleManager = subtitleManager;
-        _subtitleEncoder = subtitleEncoder;
         _mediaSourceManager = mediaSourceManager;
         _providerManager = providerManager;
         _fileSystem = fileSystem;
         _logger = logger;
+        _subtitleStreamService = subtitleStreamService;
     }
 
     /// <summary>
@@ -228,50 +228,16 @@ public class SubtitleController : BaseJellyfinApiController
         index ??= routeIndex;
         format ??= routeFormat;
 
-        if (string.Equals(format, "js", StringComparison.OrdinalIgnoreCase))
-        {
-            format = "json";
-        }
-
-        if (string.IsNullOrEmpty(format))
-        {
-            var item = _libraryManager.GetItemById<Video>(itemId.Value);
-
-            var idString = itemId.Value.ToString("N", CultureInfo.InvariantCulture);
-            var mediaSource = _mediaSourceManager.GetStaticMediaSources(item, false)
-                .First(i => string.Equals(i.Id, mediaSourceId ?? idString, StringComparison.Ordinal));
-
-            var subtitleStream = mediaSource.MediaStreams
-                .First(i => i.Type == MediaStreamType.Subtitle && i.Index == index);
-
-            return PhysicalFile(subtitleStream.Path, MimeTypes.GetMimeType(subtitleStream.Path));
-        }
-
-        if (string.Equals(format, "vtt", StringComparison.OrdinalIgnoreCase) && addVttTimeMap)
-        {
-            Stream stream = await EncodeSubtitles(itemId.Value, mediaSourceId, index.Value, format, startPositionTicks, endPositionTicks, copyTimestamps).ConfigureAwait(false);
-            await using (stream.ConfigureAwait(false))
-            {
-                using var reader = new StreamReader(stream);
-
-                var text = await reader.ReadToEndAsync().ConfigureAwait(false);
-
-                text = text.Replace("WEBVTT", "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000", StringComparison.Ordinal);
-
-                return File(Encoding.UTF8.GetBytes(text), MimeTypes.GetMimeType("file." + format));
-            }
-        }
-
-        return File(
-            await EncodeSubtitles(
-                itemId.Value,
-                mediaSourceId,
-                index.Value,
-                format,
-                startPositionTicks,
-                endPositionTicks,
-                copyTimestamps).ConfigureAwait(false),
-            MimeTypes.GetMimeType("file." + format));
+        return await _subtitleStreamService.GetSubtitleAsync(
+            itemId.Value,
+            mediaSourceId,
+            index.Value,
+            format,
+            startPositionTicks,
+            endPositionTicks,
+            copyTimestamps,
+            addVttTimeMap,
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -454,39 +420,6 @@ public class SubtitleController : BaseJellyfinApiController
                 return NoContent();
             }
         }
-    }
-
-    /// <summary>
-    /// Encodes a subtitle in the specified format.
-    /// </summary>
-    /// <param name="id">The media id.</param>
-    /// <param name="mediaSourceId">The source media id.</param>
-    /// <param name="index">The subtitle index.</param>
-    /// <param name="format">The format to convert to.</param>
-    /// <param name="startPositionTicks">The start position in ticks.</param>
-    /// <param name="endPositionTicks">The end position in ticks.</param>
-    /// <param name="copyTimestamps">Whether to copy the timestamps.</param>
-    /// <returns>A <see cref="Task{Stream}"/> with the new subtitle file.</returns>
-    private Task<Stream> EncodeSubtitles(
-        Guid id,
-        string? mediaSourceId,
-        int index,
-        string format,
-        long startPositionTicks,
-        long? endPositionTicks,
-        bool copyTimestamps)
-    {
-        var item = _libraryManager.GetItemById<BaseItem>(id);
-
-        return _subtitleEncoder.GetSubtitles(
-            item,
-            mediaSourceId,
-            index,
-            format,
-            startPositionTicks,
-            endPositionTicks ?? 0,
-            copyTimestamps,
-            CancellationToken.None);
     }
 
     /// <summary>
