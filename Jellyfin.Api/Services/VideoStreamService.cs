@@ -87,6 +87,7 @@ public class VideoStreamService : IVideoStreamService
 
         if (request.Static && state.DirectStreamProvider is not null)
         {
+            cancellationTokenSource.Dispose();
             var liveStreamInfo = _mediaSourceManager.GetLiveStreamInfo(request.LiveStreamId);
             if (liveStreamInfo is null)
             {
@@ -101,18 +102,21 @@ public class VideoStreamService : IVideoStreamService
         // Static remote stream
         if (request.Static && state.InputProtocol == MediaProtocol.Http)
         {
+            cancellationTokenSource.Dispose();
             var httpClient = _httpClientFactory.CreateClient(NamedClient.Default);
             return await FileStreamResponseHelpers.GetStaticRemoteStreamResult(state, httpClient, httpContext, cancellationToken).ConfigureAwait(false);
         }
 
         if (request.Static && state.InputProtocol != MediaProtocol.File)
         {
+            cancellationTokenSource.Dispose();
             return new BadRequestObjectResult($"Input protocol {state.InputProtocol} cannot be streamed statically");
         }
 
         // Static stream
         if (request.Static && !(state.MediaSource.VideoType == VideoType.BluRay || state.MediaSource.VideoType == VideoType.Dvd))
         {
+            cancellationTokenSource.Dispose();
             var contentType = state.GetMimeType("." + state.OutputContainer, false) ?? state.GetMimeType(state.MediaPath);
 
             if (state.MediaSource.IsInfiniteStream)
