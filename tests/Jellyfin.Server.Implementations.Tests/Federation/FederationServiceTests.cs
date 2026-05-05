@@ -121,7 +121,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.HandleFollowingAcceptedAsync(SignerUrl), Times.Once);
+        _peerServiceMock.Verify(p => p.HandleFollowingAcceptedAsync(SignerUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // --- Reject ---
@@ -137,7 +137,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.HandleFollowingRejectedAsync(SignerUrl), Times.Once);
+        _peerServiceMock.Verify(p => p.HandleFollowingRejectedAsync(SignerUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // --- Undo{Follow} ---

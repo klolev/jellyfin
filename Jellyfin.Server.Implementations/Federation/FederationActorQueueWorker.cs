@@ -66,8 +66,11 @@ public sealed class FederationActorQueueWorker : BackgroundService
     {
         if (!_configManager.GetFederationConfiguration().Enabled)
         {
+            _logger.LogInformation("Federation is disabled — activity queue worker will not start");
             return;
         }
+
+        _logger.LogInformation("Federation activity queue worker started (poll interval: {Interval}s)", PollIntervalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -82,6 +85,8 @@ public sealed class FederationActorQueueWorker : BackgroundService
 
             await Task.Delay(TimeSpan.FromSeconds(PollIntervalSeconds), stoppingToken).ConfigureAwait(false);
         }
+
+        _logger.LogInformation("Federation activity queue worker stopped");
     }
 
     private async Task ProcessReadyQueuesAsync(CancellationToken cancellationToken)
@@ -97,6 +102,11 @@ public sealed class FederationActorQueueWorker : BackgroundService
                 .Select(q => q.Id)
                 .ToArrayAsync(cancellationToken)
                 .ConfigureAwait(false);
+        }
+
+        if (readyQueueIds.Length > 0)
+        {
+            _logger.LogDebug("Processing {Count} ready actor queue(s)", readyQueueIds.Length);
         }
 
         foreach (var queueId in readyQueueIds)
@@ -153,6 +163,7 @@ public sealed class FederationActorQueueWorker : BackgroundService
                     queue.AttemptCount = 0;
                     queue.NextAttemptAt = DateTime.UtcNow;
                     await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    _logger.LogDebug("Delivered {Kind} to {Actor} ({Url})", item.Kind, queue.Actor.Url, item.TargetUrl);
                     continue;
                 }
 
@@ -160,9 +171,11 @@ public sealed class FederationActorQueueWorker : BackgroundService
                 queue.AttemptCount += 1;
                 queue.NextAttemptAt = DateTime.UtcNow.Add(ComputeBackoff(queue.AttemptCount));
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                _logger.LogDebug(
-                    "Queue for {Actor} paused: attempt #{Attempt}, next at {Next:O}",
+                _logger.LogWarning(
+                    "Queue for {Actor} paused after failed {Kind} to {Url}: attempt #{Attempt}, next retry at {Next:O}",
                     queue.Actor.Url,
+                    item.Kind,
+                    item.TargetUrl,
                     queue.AttemptCount,
                     queue.NextAttemptAt);
                 return;

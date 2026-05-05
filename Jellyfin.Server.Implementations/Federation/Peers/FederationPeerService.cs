@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities.Federation;
@@ -261,15 +262,16 @@ public class FederationPeerService : IFederationPeerService
     /// Handles a remote actor accepting our follow request.
     /// </summary>
     /// <param name="actorUrl">The actor URL that accepted.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>Nothing.</returns>
-    public async Task HandleFollowingAcceptedAsync(string actorUrl)
+    public async Task HandleFollowingAcceptedAsync(string actorUrl, CancellationToken cancellationToken = default)
     {
         FederationActor acceptedActor;
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             var request = await dbContext.FederationFollowRequests
-                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Following && !r.Responded)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Following && !r.Responded, cancellationToken)
                 .ConfigureAwait(false);
             if (request == null)
             {
@@ -280,7 +282,7 @@ public class FederationPeerService : IFederationPeerService
 
             // Actor should already exist from when we sent the follow request
             var federationActor = await dbContext.FederationActors
-                .FirstOrDefaultAsync(a => a.Url == actorUrl)
+                .FirstOrDefaultAsync(a => a.Url == actorUrl, cancellationToken)
                 .ConfigureAwait(false);
             if (federationActor == null)
             {
@@ -289,27 +291,28 @@ public class FederationPeerService : IFederationPeerService
             }
 
             var following = new FederationFollowing(federationActor.Id);
-            await dbContext.FederationFollowings.AddAsync(following).ConfigureAwait(false);
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.FederationFollowings.AddAsync(following, cancellationToken).ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             acceptedActor = federationActor;
         }
 
         // Enqueue the initial backfill Fetch — the queue worker drives the pagination chain.
-        await _backfillService.BackfillFromAsync(acceptedActor).ConfigureAwait(false);
+        await _backfillService.BackfillFromAsync(acceptedActor, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Handles a remote actor rejecting our follow request.
     /// </summary>
     /// <param name="actorUrl">The actor URL that rejected.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>Nothing.</returns>
-    public async Task HandleFollowingRejectedAsync(string actorUrl)
+    public async Task HandleFollowingRejectedAsync(string actorUrl, CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             var request = await dbContext.FederationFollowRequests
-                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Following && !r.Responded)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Following && !r.Responded, cancellationToken)
                 .ConfigureAwait(false);
             if (request == null)
             {
@@ -317,7 +320,7 @@ public class FederationPeerService : IFederationPeerService
             }
 
             request.Responded = true;
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

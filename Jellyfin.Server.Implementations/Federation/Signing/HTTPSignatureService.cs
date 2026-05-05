@@ -10,6 +10,7 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Federation.Configuration;
 using MediaBrowser.Controller.Federation.Signing;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 using StructuredFieldValues;
 
@@ -20,6 +21,7 @@ namespace Jellyfin.Server.Implementations.Federation.Signing;
 /// </summary>
 public class HTTPSignatureService : IFederationSigningService
 {
+    private const int MaxInboxBodySize = 64 * 1024;
     private static readonly string[] RequiredComponents = { "@method", "@authority", "@path", "content-digest", "content-type" };
     private static readonly string[] BodylessComponents = { "@method", "@authority", "@path" };
     private static readonly TimeSpan SignatureMaxAge = TimeSpan.FromMinutes(5);
@@ -27,16 +29,19 @@ public class HTTPSignatureService : IFederationSigningService
 
     private readonly IHTTPSignatureKeyProvider _keyProvider;
     private readonly IConfigurationManager _configManager;
+    private readonly ILogger<HTTPSignatureService> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HTTPSignatureService"/> class.
     /// </summary>
     /// <param name="keyProvider">The actor public key provider.</param>
     /// <param name="configManager">The configuration manager.</param>
-    public HTTPSignatureService(IHTTPSignatureKeyProvider keyProvider, IConfigurationManager configManager)
+    /// <param name="logger">The logger.</param>
+    public HTTPSignatureService(IHTTPSignatureKeyProvider keyProvider, IConfigurationManager configManager, ILogger<HTTPSignatureService> logger)
     {
         _keyProvider = keyProvider;
         _configManager = configManager;
+        _logger = logger;
     }
 
     /// <inheritdoc/>
@@ -81,6 +86,7 @@ public class HTTPSignatureService : IFederationSigningService
 
         if (StringValues.IsNullOrEmpty(signatureHeader) || StringValues.IsNullOrEmpty(signatureInputHeader))
         {
+            _logger.LogDebug("Signature validation failed: missing Signature or Signature-Input header");
             return null;
         }
 
@@ -88,6 +94,7 @@ public class HTTPSignatureService : IFederationSigningService
         if (SfvParser.ParseDictionary(signatureInputHeader.ToString(), out var sigInputDict) != null ||
             SfvParser.ParseDictionary(signatureHeader.ToString(), out var sigDict) != null)
         {
+            _logger.LogDebug("Signature validation failed: could not parse structured field headers");
             return null;
         }
 
@@ -97,6 +104,7 @@ public class HTTPSignatureService : IFederationSigningService
             .FirstOrDefault();
         if (string.IsNullOrEmpty(label))
         {
+            _logger.LogDebug("Signature validation failed: no matching label between Signature and Signature-Input");
             return null;
         }
 
@@ -106,12 +114,14 @@ public class HTTPSignatureService : IFederationSigningService
         // Extract signature bytes
         if (sigItem.Value is not ReadOnlyMemory<byte> signatureBytes)
         {
+            _logger.LogDebug("Signature validation failed: signature value is not a byte sequence");
             return null;
         }
 
         // Extract keyid from parameters
         if (!inputItem.Parameters.TryGetValue("keyid", out var keyIdObj) || keyIdObj is not string keyId)
         {
+            _logger.LogDebug("Signature validation failed: missing or non-string keyid parameter");
             return null;
         }
 
@@ -121,6 +131,7 @@ public class HTTPSignatureService : IFederationSigningService
         // Reject stale signatures: require a `created` parameter within SignatureMaxAge.
         if (!inputItem.Parameters.TryGetValue("created", out var createdObj) || createdObj is not long createdEpoch)
         {
+            _logger.LogDebug("Signature validation failed: missing or invalid created parameter");
             return null;
         }
 
@@ -128,6 +139,7 @@ public class HTTPSignatureService : IFederationSigningService
         var age = DateTimeOffset.UtcNow - createdAt;
         if (age > SignatureMaxAge || age < -SignatureMaxAge)
         {
+            _logger.LogDebug("Signature validation failed: signature age {Age} exceeds max {Max} (keyid={KeyId})", age, SignatureMaxAge, keyId);
             return null;
         }
 
@@ -136,10 +148,23 @@ public class HTTPSignatureService : IFederationSigningService
             ? list.Select(c => c.Value as string ?? c.Value.ToString() ?? string.Empty).ToList()
             : new List<string>();
 
+        // Reject oversized payloads before reading the body into memory.
+        if (request.ContentLength > MaxInboxBodySize)
+        {
+            _logger.LogWarning("Signature validation failed: Content-Length {Length} exceeds {Max} (keyid={KeyId})", request.ContentLength, MaxInboxBodySize, keyId);
+            return null;
+        }
+
         // Read the actual body to determine whether the request is bodyful.
         request.EnableBuffering();
         using var ms = new System.IO.MemoryStream();
         await request.Body.CopyToAsync(ms).ConfigureAwait(false);
+        if (ms.Length > MaxInboxBodySize)
+        {
+            _logger.LogWarning("Signature validation failed: body size {Length} exceeds {Max} (keyid={KeyId})", ms.Length, MaxInboxBodySize, keyId);
+            return null;
+        }
+
         request.Body.Position = 0;
         var bodyBytes = ms.ToArray();
 
@@ -147,6 +172,7 @@ public class HTTPSignatureService : IFederationSigningService
         var required = hasBody ? RequiredComponents : BodylessComponents;
         if (!required.All(c => components.Contains(c)))
         {
+            _logger.LogDebug("Signature validation failed: missing required components (keyid={KeyId})", keyId);
             return null;
         }
 
@@ -155,11 +181,13 @@ public class HTTPSignatureService : IFederationSigningService
             var contentDigestHeader = request.Headers["content-digest"].ToString();
             if (string.IsNullOrEmpty(contentDigestHeader))
             {
+                _logger.LogDebug("Signature validation failed: bodyful request missing content-digest header (keyid={KeyId})", keyId);
                 return null;
             }
 
             if (!VerifyContentDigest(contentDigestHeader, bodyBytes))
             {
+                _logger.LogWarning("Signature validation failed: content-digest mismatch (keyid={KeyId})", keyId);
                 return null;
             }
         }
@@ -203,6 +231,7 @@ public class HTTPSignatureService : IFederationSigningService
         var publicKey = await _keyProvider.GetPublicKey(actorUrl).ConfigureAwait(false);
         if (publicKey == null)
         {
+            _logger.LogWarning("Signature validation failed: could not fetch public key for {ActorUrl}", actorUrl);
             return null;
         }
 
@@ -215,10 +244,16 @@ public class HTTPSignatureService : IFederationSigningService
                 signatureBytes.ToArray(),
                 hashAlgorithm,
                 padding);
+            if (!verified)
+            {
+                _logger.LogWarning("Signature validation failed: cryptographic verification failed for {ActorUrl}", actorUrl);
+            }
+
             return verified ? actorUrl : null;
         }
-        catch (CryptographicException)
+        catch (CryptographicException ex)
         {
+            _logger.LogWarning(ex, "Signature validation failed: cryptographic exception for {ActorUrl}", actorUrl);
             return null;
         }
     }

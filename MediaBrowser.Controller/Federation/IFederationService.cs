@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Model.Federation.ActivityStreams;
 
@@ -28,6 +29,7 @@ public interface IFederationService
     /// </summary>
     /// <param name="request">The request body.</param>
     /// <param name="signingActorUrl">The actor URL from the request's verified signature.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>Nothing.</returns>
-    public Task HandleInboxActivityAsync(Object request, string signingActorUrl);
+    public Task HandleInboxActivityAsync(Object request, string signingActorUrl, CancellationToken cancellationToken = default);
 }

@@ -43,8 +43,11 @@ public sealed class FederationStreamTokenCleanupWorker : BackgroundService
     {
         if (!_configManager.GetFederationConfiguration().Enabled)
         {
+            _logger.LogInformation("Federation is disabled — stream token cleanup worker will not start");
             return;
         }
+
+        _logger.LogInformation("Federation stream token cleanup worker started (sweep interval: {Interval})", SweepInterval);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -53,7 +56,7 @@ public sealed class FederationStreamTokenCleanupWorker : BackgroundService
                 var removed = await _tokenService.DeleteExpiredAsync(stoppingToken).ConfigureAwait(false);
                 if (removed > 0)
                 {
-                    _logger.LogDebug("Swept {Count} expired federation stream tokens", removed);
+                    _logger.LogInformation("Swept {Count} expired federation stream token(s)", removed);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

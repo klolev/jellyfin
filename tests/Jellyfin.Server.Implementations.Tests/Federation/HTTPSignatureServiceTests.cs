@@ -11,6 +11,7 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Federation.Configuration;
 using MediaBrowser.Controller.Federation.Signing;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Primitives;
 using Moq;
 using Xunit;
@@ -49,7 +50,7 @@ public class HTTPSignatureServiceTests
 
         _keyProviderMock = new Mock<IHTTPSignatureKeyProvider>();
 
-        _sut = new HTTPSignatureService(_keyProviderMock.Object, _configManagerMock.Object);
+        _sut = new HTTPSignatureService(_keyProviderMock.Object, _configManagerMock.Object, NullLogger<HTTPSignatureService>.Instance);
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Model.Federation.Peers;
 
@@ -20,15 +21,17 @@ public interface IFederationPeerService
     /// Handles a remote actor accepting our follow request.
     /// </summary>
     /// <param name="actorUrl">The actor URL that accepted.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>Nothing.</returns>
-    public Task HandleFollowingAcceptedAsync(string actorUrl);
+    public Task HandleFollowingAcceptedAsync(string actorUrl, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Handles a remote actor rejecting our follow request.
     /// </summary>
     /// <param name="actorUrl">The actor URL that rejected.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>Nothing.</returns>
-    public Task HandleFollowingRejectedAsync(string actorUrl);
+    public Task HandleFollowingRejectedAsync(string actorUrl, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Handles vetting a follow request.

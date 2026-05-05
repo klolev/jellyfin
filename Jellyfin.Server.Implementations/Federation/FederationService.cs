@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities.Federation;
@@ -145,7 +146,7 @@ public class FederationService : IFederationService
     }
 
     /// <inheritdoc/>
-    public async Task HandleInboxActivityAsync(ActivityStreams.Object request, string signingActorUrl)
+    public async Task HandleInboxActivityAsync(ActivityStreams.Object request, string signingActorUrl, CancellationToken cancellationToken = default)
     {
         if (request is not ActivityStreams.Activity activity)
         {
@@ -177,11 +178,11 @@ public class FederationService : IFederationService
                     break;
 
                 case nameof(Accept):
-                    await _peerService.HandleFollowingAcceptedAsync(signingActorUrl).ConfigureAwait(false);
+                    await _peerService.HandleFollowingAcceptedAsync(signingActorUrl, cancellationToken).ConfigureAwait(false);
                     break;
 
                 case nameof(Reject):
-                    await _peerService.HandleFollowingRejectedAsync(signingActorUrl).ConfigureAwait(false);
+                    await _peerService.HandleFollowingRejectedAsync(signingActorUrl, cancellationToken).ConfigureAwait(false);
                     break;
 
                 case nameof(Undo):
@@ -209,7 +210,7 @@ public class FederationService : IFederationService
                 case nameof(Create):
                 case nameof(Update):
                 case nameof(Delete):
-                    await _libraryIngester.IngestAsync(activity).ConfigureAwait(false);
+                    await _libraryIngester.IngestAsync(activity, cancellationToken).ConfigureAwait(false);
                     break;
 
                 default:

@@ -83,7 +83,17 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             return;
         }
 
-        _ = HandleLocalItemAddedAsync(e.Item);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await HandleLocalItemAddedAsync(e.Item).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error publishing federation Create for added item {ItemName}", e.Item.Name);
+            }
+        });
     }
 
     private void OnItemUpdated(object? sender, ItemChangeEventArgs e)
@@ -99,7 +109,17 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             return;
         }
 
-        _ = PublishCreateAsync(e.Item);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await PublishCreateAsync(e.Item).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error publishing federation Update for {ItemName}", e.Item.Name);
+            }
+        });
     }
 
     private void OnItemRemoved(object? sender, ItemChangeEventArgs e)
@@ -109,7 +129,17 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             return;
         }
 
-        _ = PublishDeleteAsync(e.Item);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await PublishDeleteAsync(e.Item).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error publishing federation Delete for {ItemName}", e.Item.Name);
+            }
+        });
     }
 
     /// <summary>
