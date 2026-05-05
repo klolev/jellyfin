@@ -7,7 +7,10 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Database.Implementations;
+using Jellyfin.Database.Implementations.Entities.Federation;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Federation.Configuration;
 using Microsoft.EntityFrameworkCore;
@@ -21,6 +24,9 @@ namespace Jellyfin.Server.Integration.Tests;
 /// </summary>
 public class FederationTests : IClassFixture<JellyfinApplicationFactory>
 {
+    private static readonly SemaphoreSlim _startupLock = new(1, 1);
+    private static string? _cachedAccessToken;
+
     private readonly JellyfinApplicationFactory _factory;
 
     public FederationTests(JellyfinApplicationFactory factory)
@@ -46,9 +52,7 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         var response = await client.GetAsync("Federation/Actor");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var content = await response.Content.ReadAsStringAsync();
-        var doc = JsonDocument.Parse(content);
-        var root = doc.RootElement;
+        var root = await ParseJsonResponseAsync(response);
 
         Assert.Equal("Service", root.GetProperty("type").GetString());
         Assert.Equal("https://test.example/Federation/Actor", root.GetProperty("id").GetString());
@@ -72,22 +76,16 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
     [Fact]
     public async Task PostInbox_WithUnsignedFollow_Returns401()
     {
-        // Follow activities are now signature-gated like every other inbound activity — the
-        // LocalKeyProvider lazily fetches unknown actors on first contact so there's no need for
-        // a Follow-bypass. An unsigned Follow gets 401.
         EnableFederation();
         var client = _factory.CreateClient();
 
-        var follow = new
+        var response = await PostActivityAsync(client, new
         {
             type = "Follow",
             actor = "https://remote.example/users/bob",
             @object = new { id = "https://test.example/Federation/Actor" }
-        };
+        });
 
-        var content = JsonContent.Create(follow);
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/activity+json");
-        var response = await client.PostAsync("Federation/Inbox", content);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
@@ -100,11 +98,9 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         var response = await client.GetAsync("Federation/Outbox");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var root = doc.RootElement;
+        var root = await ParseJsonResponseAsync(response);
         Assert.Equal("OrderedCollection", root.GetProperty("type").GetString());
         Assert.Equal(0, root.GetProperty("totalItems").GetInt32());
-        // Empty collection must not advertise a `first` page — follower-gated content stays hidden.
         Assert.False(root.TryGetProperty("first", out _));
     }
 
@@ -114,13 +110,12 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         EnableFederation();
         var client = _factory.CreateClient();
 
-        var follow = new
+        var response = await client.PostAsJsonAsync("Federation/Inbox", new
         {
             type = "Follow",
             actor = "https://remote.example/users/bob"
-        };
+        });
 
-        var response = await client.PostAsJsonAsync("Federation/Inbox", follow);
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
     }
 
@@ -130,16 +125,13 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         EnableFederation();
         var client = _factory.CreateClient();
 
-        var accept = new
+        var response = await PostActivityAsync(client, new
         {
             type = "Accept",
             actor = "https://remote.example/users/someone",
             @object = new { type = "Follow" }
-        };
+        });
 
-        var content = JsonContent.Create(accept);
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/activity+json");
-        var response = await client.PostAsync("Federation/Inbox", content);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
@@ -152,9 +144,8 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         var response = await client.GetAsync(".well-known/webfinger?resource=acct:jellyfin@test.example");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var content = await response.Content.ReadAsStringAsync();
-        var doc = JsonDocument.Parse(content);
-        Assert.Equal("acct:jellyfin@test.example", doc.RootElement.GetProperty("subject").GetString());
+        var root = await ParseJsonResponseAsync(response);
+        Assert.Equal("acct:jellyfin@test.example", root.GetProperty("subject").GetString());
     }
 
     [Fact]
@@ -178,101 +169,85 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
     }
 
     [Fact]
-    public async Task SendFollowRequest_WhenActorUnreachable_Returns502AndNoRequest()
+    public async Task WebFinger_LinksPointToActorEndpoint()
     {
         EnableFederation();
         var client = _factory.CreateClient();
-        var accessToken = await AuthHelper.CompleteStartupAsync(client);
-        client.DefaultRequestHeaders.AddAuthHeader(accessToken);
 
-        var response = await client.PostAsync("Federation/Admin/Following/Requests?actorUrl=https://unreachable.example/actor", null);
+        var response = await client.GetAsync(".well-known/webfinger?resource=acct:jellyfin@test.example");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var root = await ParseJsonResponseAsync(response);
+        var selfLink = root.GetProperty("links").EnumerateArray()
+            .First(l => l.GetProperty("rel").GetString() == "self");
+
+        Assert.Equal("application/activity+json", selfLink.GetProperty("type").GetString());
+        Assert.Equal("https://test.example/Federation/Actor", selfLink.GetProperty("href").GetString());
+    }
+
+    [Fact]
+    public async Task AdminEndpoints_WithoutAuth_Returns401()
+    {
+        var client = _factory.CreateClient();
+        var response = await client.GetAsync("Federation/Admin/Followers");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SendFollowRequest_WhenActorUnreachable_Returns502AndNoRequest()
+    {
+        EnableFederation();
+        var client = await CreateAuthenticatedClientAsync();
+
+        var response = await client.PostAsync(
+            "Federation/Admin/Following/Requests?actorUrl=https://unreachable.example/actor", null);
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
 
-        // Verify no follow request was persisted since actor fetch failed
-        using var scope = _factory.Services.CreateScope();
-        var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-        var dbContext = await dbProvider.CreateDbContextAsync();
-        await using (dbContext)
+        await UsingDbAsync(async db =>
         {
-            var request = await dbContext.FederationFollowRequests
+            var request = await db.FederationFollowRequests
                 .Include(r => r.Actor)
                 .FirstOrDefaultAsync(r => r.Actor.Url == "https://unreachable.example/actor"
-                    && r.Type == Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following);
+                    && r.Type == FederationFollowRequestType.Following);
             Assert.Null(request);
-        }
+        });
     }
 
     [Fact]
     public async Task PostInbox_WithAcceptFollow_WithoutSignature_Returns401()
     {
         EnableFederation();
+        var actorUrl = "https://remote.example/users/charlie";
 
-        // Seed: create an actor and a pending following request
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                // Only seed if not already present
-                var charlieUrl = "https://remote.example/users/charlie";
-                var charlie = await dbContext.FederationActors.FirstOrDefaultAsync(a => a.Url == charlieUrl);
-                if (charlie is null)
-                {
-                    charlie = new Jellyfin.Database.Implementations.Entities.Federation.FederationActor(
-                        charlieUrl,
-                        charlieUrl + "/inbox",
-                        charlieUrl + "/outbox",
-                        "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWe\nBKg7e1kY5BRYsGOOGIEg0+JQFAV5LB4CEkqFOzK3eO1PNgC6kS2G1GRDqVHJ5zU\nIX1GBm2P4gVBlqN+8JO/LCDA7HPMYu/rMN6F4A5iBXaA+MbG7FEbXzO0pvBEOc8\nfxWTGknOO9MI+I/HUPCAYvIL3bF0dN\n0tnj6DvNfjXqvMKe1R0M0Wfqhi+RPHO7oeqe+DnagDBgFKqD7JQnBVkuP3YQhcJm\nUO1KF3GHzK0LJW7vYCDaoFxUHdG/ZAd+i3EfFJGMsA+i9ECO3rNc+0gGm9RUNJDM\nQIDAQAB\n-----END PUBLIC KEY-----");
-                    await dbContext.FederationActors.AddAsync(charlie);
-                    await dbContext.SaveChangesAsync();
-                }
+        await SeedActorWithFollowRequestAsync(
+            actorUrl,
+            "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWe\nBKg7e1kY5BRYsGOOGIEg0+JQFAV5LB4CEkqFOzK3eO1PNgC6kS2G1GRDqVHJ5zU\nIX1GBm2P4gVBlqN+8JO/LCDA7HPMYu/rMN6F4A5iBXaA+MbG7FEbXzO0pvBEOc8\nfxWTGknOO9MI+I/HUPCAYvIL3bF0dN\n0tnj6DvNfjXqvMKe1R0M0Wfqhi+RPHO7oeqe+DnagDBgFKqD7JQnBVkuP3YQhcJm\nUO1KF3GHzK0LJW7vYCDaoFxUHdG/ZAd+i3EfFJGMsA+i9ECO3rNc+0gGm9RUNJDM\nQIDAQAB\n-----END PUBLIC KEY-----",
+            FederationFollowRequestType.Following);
 
-                if (!await dbContext.FederationFollowRequests.AnyAsync(r => r.ActorId == charlie.Id && r.Type == Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following))
-                {
-                    var followRequest = new Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequest(
-                        charlie.Id,
-                        Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following);
-                    await dbContext.FederationFollowRequests.AddAsync(followRequest);
-                    await dbContext.SaveChangesAsync();
-                }
-            }
-        }
-
-        // Send Accept{Follow} without HTTP signature — should be rejected
         var client = _factory.CreateClient();
-        var accept = new
+        var response = await PostActivityAsync(client, new
         {
             type = "Accept",
-            actor = "https://remote.example/users/charlie",
+            actor = actorUrl,
             @object = new
             {
                 type = "Follow",
                 actor = "https://test.example/Federation/Actor",
-                @object = new { id = "https://remote.example/users/charlie" }
+                @object = new { id = actorUrl }
             }
-        };
+        });
 
-        var content = JsonContent.Create(accept);
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/activity+json");
-        var response = await client.PostAsync("Federation/Inbox", content);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
-        // Verify: follow request is NOT marked responded
-        using (var scope = _factory.Services.CreateScope())
+        await UsingDbAsync(async db =>
         {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                var request = await dbContext.FederationFollowRequests
-                    .Include(r => r.Actor)
-                    .FirstOrDefaultAsync(r => r.Actor.Url == "https://remote.example/users/charlie"
-                        && r.Type == Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following);
-                Assert.NotNull(request);
-                Assert.False(request.Responded);
-            }
-        }
+            var request = await db.FederationFollowRequests
+                .Include(r => r.Actor)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl
+                    && r.Type == FederationFollowRequestType.Following);
+            Assert.NotNull(request);
+            Assert.False(request.Responded);
+        });
     }
 
     [Fact]
@@ -280,42 +255,13 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
     {
         EnableFederation();
 
-        // Generate a keypair for the remote actor
         using var rsa = RSA.Create(2048);
-        var publicKeyPem = rsa.ExportSubjectPublicKeyInfoPem();
         var actorUrl = "https://remote.example/users/dave";
 
-        // Seed: actor with the public key and a pending following request
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                var daveActor = await dbContext.FederationActors.FirstOrDefaultAsync(a => a.Url == actorUrl);
-                if (daveActor is null)
-                {
-                    daveActor = new Jellyfin.Database.Implementations.Entities.Federation.FederationActor(
-                        actorUrl,
-                        $"{actorUrl}/inbox",
-                        $"{actorUrl}/outbox",
-                        publicKeyPem);
-                    await dbContext.FederationActors.AddAsync(daveActor);
-                    await dbContext.SaveChangesAsync();
-                }
+        await SeedActorWithFollowRequestAsync(
+            actorUrl, rsa.ExportSubjectPublicKeyInfoPem(), FederationFollowRequestType.Following);
 
-                if (!await dbContext.FederationFollowRequests.AnyAsync(r => r.ActorId == daveActor.Id && r.Type == Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following))
-                {
-                    var followRequest = new Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequest(
-                        daveActor.Id,
-                        Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following);
-                    await dbContext.FederationFollowRequests.AddAsync(followRequest);
-                    await dbContext.SaveChangesAsync();
-                }
-            }
-        }
-
-        // Build and sign the Accept{Follow} request
+        var client = _factory.CreateClient();
         var accept = new
         {
             type = "Accept",
@@ -328,66 +274,24 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
             }
         };
 
-        var body = JsonSerializer.SerializeToUtf8Bytes(accept);
-        var request = new HttpRequestMessage(HttpMethod.Post, "Federation/Inbox");
-        request.Content = new ByteArrayContent(body);
-        request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/activity+json");
-
-        // Compute content-digest
-        var hash = SHA256.HashData(body);
-        request.Content.Headers.TryAddWithoutValidation("Content-Digest", $"sha-256=:{Convert.ToBase64String(hash)}:");
-
-        // Build RFC 9421 signature
-        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var keyId = $"{actorUrl}#main-key";
-        var components = new[] { "@method", "@authority", "@path", "content-digest", "content-type" };
-
-        var signingLines = new List<string>
-        {
-            "\"@method\": POST",
-            "\"@authority\": localhost",
-            "\"@path\": /Federation/Inbox",
-            $"\"content-digest\": sha-256=:{Convert.ToBase64String(hash)}:",
-            "\"content-type\": application/activity+json"
-        };
-
-        var componentList = string.Join(" ", components.Select(c => $"\"{c}\""));
-        var signatureParams = $"({componentList});created={created};keyid=\"{keyId}\"";
-        signingLines.Add($"\"@signature-params\": {signatureParams}");
-
-        var signingBase = string.Join('\n', signingLines);
-        var signatureBytes = rsa.SignData(
-            Encoding.UTF8.GetBytes(signingBase),
-            HashAlgorithmName.SHA512,
-            RSASignaturePadding.Pss);
-
-        request.Headers.TryAddWithoutValidation("Signature-Input", $"sig1={signatureParams}");
-        request.Headers.TryAddWithoutValidation("Signature", $"sig1=:{Convert.ToBase64String(signatureBytes)}:");
-
-        var client = _factory.CreateClient();
-        var response = await client.SendAsync(request);
+        var response = await client.SendAsync(
+            BuildSignedRequest(HttpMethod.Post, "Federation/Inbox", accept, rsa, actorUrl));
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
-        // Verify: follow request is marked responded and a following entry exists
-        using (var scope = _factory.Services.CreateScope())
+        await UsingDbAsync(async db =>
         {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                var followRequest = await dbContext.FederationFollowRequests
-                    .Include(r => r.Actor)
-                    .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl
-                        && r.Type == Jellyfin.Database.Implementations.Entities.Federation.FederationFollowRequestType.Following);
-                Assert.NotNull(followRequest);
-                Assert.True(followRequest.Responded);
+            var followRequest = await db.FederationFollowRequests
+                .Include(r => r.Actor)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl
+                    && r.Type == FederationFollowRequestType.Following);
+            Assert.NotNull(followRequest);
+            Assert.True(followRequest.Responded);
 
-                var following = await dbContext.FederationFollowings
-                    .Include(f => f.Actor)
-                    .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
-                Assert.NotNull(following);
-            }
-        }
+            var following = await db.FederationFollowings
+                .Include(f => f.Actor)
+                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
+            Assert.NotNull(following);
+        });
     }
 
     [Fact]
@@ -396,34 +300,10 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         EnableFederation();
 
         using var rsa = RSA.Create(2048);
-        var publicKeyPem = rsa.ExportSubjectPublicKeyInfoPem();
         var actorUrl = "https://remote.example/users/eve";
 
-        // Seed: actor + follower entry (they already follow us)
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                if (!await dbContext.FederationActors.AnyAsync(a => a.Url == actorUrl))
-                {
-                    var actor = new Jellyfin.Database.Implementations.Entities.Federation.FederationActor(
-                        actorUrl,
-                        $"{actorUrl}/inbox",
-                        $"{actorUrl}/outbox",
-                        publicKeyPem);
-                    await dbContext.FederationActors.AddAsync(actor);
-                    await dbContext.SaveChangesAsync();
+        await SeedActorWithFollowerAsync(actorUrl, rsa.ExportSubjectPublicKeyInfoPem());
 
-                    var follower = new Jellyfin.Database.Implementations.Entities.Federation.FederationFollower(actor.Id);
-                    await dbContext.FederationFollowers.AddAsync(follower);
-                    await dbContext.SaveChangesAsync();
-                }
-            }
-        }
-
-        // Build and sign Undo{Follow}
         var undo = new
         {
             type = "Undo",
@@ -436,57 +316,18 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
             }
         };
 
-        var body = JsonSerializer.SerializeToUtf8Bytes(undo);
-        var request = new HttpRequestMessage(HttpMethod.Post, "Federation/Inbox");
-        request.Content = new ByteArrayContent(body);
-        request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/activity+json");
-
-        var hash = SHA256.HashData(body);
-        request.Content.Headers.TryAddWithoutValidation("Content-Digest", $"sha-256=:{Convert.ToBase64String(hash)}:");
-
-        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var keyId = $"{actorUrl}#main-key";
-        var components = new[] { "@method", "@authority", "@path", "content-digest", "content-type" };
-
-        var signingLines = new List<string>
-        {
-            "\"@method\": POST",
-            "\"@authority\": localhost",
-            "\"@path\": /Federation/Inbox",
-            $"\"content-digest\": sha-256=:{Convert.ToBase64String(hash)}:",
-            "\"content-type\": application/activity+json"
-        };
-
-        var componentList = string.Join(" ", components.Select(c => $"\"{c}\""));
-        var signatureParams = $"({componentList});created={created};keyid=\"{keyId}\"";
-        signingLines.Add($"\"@signature-params\": {signatureParams}");
-
-        var signingBase = string.Join('\n', signingLines);
-        var signatureBytes = rsa.SignData(
-            Encoding.UTF8.GetBytes(signingBase),
-            HashAlgorithmName.SHA512,
-            RSASignaturePadding.Pss);
-
-        request.Headers.TryAddWithoutValidation("Signature-Input", $"sig1={signatureParams}");
-        request.Headers.TryAddWithoutValidation("Signature", $"sig1=:{Convert.ToBase64String(signatureBytes)}:");
-
         var client = _factory.CreateClient();
-        var response = await client.SendAsync(request);
+        var response = await client.SendAsync(
+            BuildSignedRequest(HttpMethod.Post, "Federation/Inbox", undo, rsa, actorUrl));
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
-        // Verify: follower removed
-        using (var scope = _factory.Services.CreateScope())
+        await UsingDbAsync(async db =>
         {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                var follower = await dbContext.FederationFollowers
-                    .Include(f => f.Actor)
-                    .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
-                Assert.Null(follower);
-            }
-        }
+            var follower = await db.FederationFollowers
+                .Include(f => f.Actor)
+                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
+            Assert.Null(follower);
+        });
     }
 
     [Fact]
@@ -495,30 +336,10 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
         EnableFederation();
 
         using var rsa = RSA.Create(2048);
-        var publicKeyPem = rsa.ExportSubjectPublicKeyInfoPem();
         var actorUrl = "https://remote.example/users/ghost";
 
-        // Seed: actor exists but is NOT a follower
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                if (!await dbContext.FederationActors.AnyAsync(a => a.Url == actorUrl))
-                {
-                    var actor = new Jellyfin.Database.Implementations.Entities.Federation.FederationActor(
-                        actorUrl,
-                        $"{actorUrl}/inbox",
-                        $"{actorUrl}/outbox",
-                        publicKeyPem);
-                    await dbContext.FederationActors.AddAsync(actor);
-                    await dbContext.SaveChangesAsync();
-                }
-            }
-        }
+        await SeedActorAsync(actorUrl, rsa.ExportSubjectPublicKeyInfoPem());
 
-        // Build and sign Undo{Follow}
         var undo = new
         {
             type = "Undo",
@@ -531,113 +352,104 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
             }
         };
 
-        var body = JsonSerializer.SerializeToUtf8Bytes(undo);
-        var request = new HttpRequestMessage(HttpMethod.Post, "Federation/Inbox");
-        request.Content = new ByteArrayContent(body);
-        request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/activity+json");
-
-        var hash = SHA256.HashData(body);
-        request.Content.Headers.TryAddWithoutValidation("Content-Digest", $"sha-256=:{Convert.ToBase64String(hash)}:");
-
-        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var keyId = $"{actorUrl}#main-key";
-        var components = new[] { "@method", "@authority", "@path", "content-digest", "content-type" };
-
-        var signingLines = new List<string>
-        {
-            "\"@method\": POST",
-            "\"@authority\": localhost",
-            "\"@path\": /Federation/Inbox",
-            $"\"content-digest\": sha-256=:{Convert.ToBase64String(hash)}:",
-            "\"content-type\": application/activity+json"
-        };
-
-        var componentList = string.Join(" ", components.Select(c => $"\"{c}\""));
-        var signatureParams = $"({componentList});created={created};keyid=\"{keyId}\"";
-        signingLines.Add($"\"@signature-params\": {signatureParams}");
-
-        var signingBase = string.Join('\n', signingLines);
-        var signatureBytes = rsa.SignData(
-            Encoding.UTF8.GetBytes(signingBase),
-            HashAlgorithmName.SHA512,
-            RSASignaturePadding.Pss);
-
-        request.Headers.TryAddWithoutValidation("Signature-Input", $"sig1={signatureParams}");
-        request.Headers.TryAddWithoutValidation("Signature", $"sig1=:{Convert.ToBase64String(signatureBytes)}:");
-
         var client = _factory.CreateClient();
-        var response = await client.SendAsync(request);
-
-        // Should still return 202 (no error exposed), just a no-op
+        var response = await client.SendAsync(
+            BuildSignedRequest(HttpMethod.Post, "Federation/Inbox", undo, rsa, actorUrl));
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
-        // Verify no follower was created or deleted
-        using (var scope = _factory.Services.CreateScope())
+        await UsingDbAsync(async db =>
         {
-            var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Jellyfin.Database.Implementations.JellyfinDbContext>>();
-            var dbContext = await dbProvider.CreateDbContextAsync();
-            await using (dbContext)
-            {
-                var follower = await dbContext.FederationFollowers
-                    .Include(f => f.Actor)
-                    .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
-                Assert.Null(follower);
-            }
-        }
+            var follower = await db.FederationFollowers
+                .Include(f => f.Actor)
+                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
+            Assert.Null(follower);
+        });
     }
 
     [Fact]
-    public async Task WebFinger_LinksPointToActorEndpoint()
+    public async Task FollowFlow_InboundFollow_AdminAccepts_FollowerSeesOutbox()
     {
         EnableFederation();
+
+        using var rsa = RSA.Create(2048);
+        var actorUrl = "https://remote.example/users/fullflow";
+
+        await SeedActorAsync(actorUrl, rsa.ExportSubjectPublicKeyInfoPem());
+
+        // Phase 1: Remote actor sends a signed Follow to our inbox
+        var follow = new
+        {
+            type = "Follow",
+            actor = actorUrl,
+            @object = new { id = "https://test.example/Federation/Actor" }
+        };
+
         var client = _factory.CreateClient();
+        var followResponse = await client.SendAsync(
+            BuildSignedRequest(HttpMethod.Post, "Federation/Inbox", follow, rsa, actorUrl));
+        Assert.Equal(HttpStatusCode.Accepted, followResponse.StatusCode);
 
-        var response = await client.GetAsync(".well-known/webfinger?resource=acct:jellyfin@test.example");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await UsingDbAsync(async db =>
+        {
+            var pendingRequest = await db.FederationFollowRequests
+                .Include(r => r.Actor)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl
+                    && r.Type == FederationFollowRequestType.Follower
+                    && !r.Responded);
+            Assert.NotNull(pendingRequest);
+        });
 
-        var content = await response.Content.ReadAsStringAsync();
-        var doc = JsonDocument.Parse(content);
-        var links = doc.RootElement.GetProperty("links");
-        var selfLink = links.EnumerateArray().First(l => l.GetProperty("rel").GetString() == "self");
+        // Phase 2: Admin accepts the follow request
+        var adminClient = await CreateAuthenticatedClientAsync();
+        var vetResponse = await adminClient.PatchAsync(
+            $"Federation/Admin/Followers/Requests?actorUrl={Uri.EscapeDataString(actorUrl)}",
+            JsonContent.Create(new { Accept = true }));
+        Assert.Equal(HttpStatusCode.NoContent, vetResponse.StatusCode);
 
-        Assert.Equal("application/activity+json", selfLink.GetProperty("type").GetString());
-        Assert.Equal("https://test.example/Federation/Actor", selfLink.GetProperty("href").GetString());
-    }
+        await UsingDbAsync(async db =>
+        {
+            var follower = await db.FederationFollowers
+                .Include(f => f.Actor)
+                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl);
+            Assert.NotNull(follower);
 
-    [Fact]
-    public async Task AdminEndpoints_WithoutAuth_Returns401()
-    {
-        var client = _factory.CreateClient();
+            var request = await db.FederationFollowRequests
+                .Include(r => r.Actor)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl
+                    && r.Type == FederationFollowRequestType.Follower);
+            Assert.NotNull(request);
+            Assert.True(request.Responded);
+        });
 
-        var response = await client.GetAsync("Federation/Admin/Followers");
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-    }
+        // Phase 3: Seed an outbox item — signed follower sees it
+        await UsingDbAsync(async db =>
+        {
+            var outboxItem = new FederationOutboxActivity(
+                "{\"type\":\"Create\",\"actor\":\"https://test.example/Federation/Actor\",\"object\":{\"type\":\"Video\",\"name\":\"Test Movie\"}}");
+            await db.FederationOutboxActivities.AddAsync(outboxItem);
+            await db.SaveChangesAsync();
+        });
 
-    private void EnableFederation()
-    {
-        using var scope = _factory.Services.CreateScope();
-        var configManager = scope.ServiceProvider.GetRequiredService<IConfigurationManager>();
-        var config = configManager.GetFederationConfiguration();
-        config.Enabled = true;
-        config.Hostname = "test.example";
-        config.ActorName = "jellyfin";
-        configManager.SaveConfiguration(FederationConfigurationStore.StoreKey, config);
-    }
+        var outboxRequest = BuildSignedRequest(HttpMethod.Get, "Federation/Outbox", null, rsa, actorUrl);
+        var outboxResponse = await client.SendAsync(outboxRequest);
+        Assert.Equal(HttpStatusCode.OK, outboxResponse.StatusCode);
 
-    private void DisableFederation()
-    {
-        using var scope = _factory.Services.CreateScope();
-        var configManager = scope.ServiceProvider.GetRequiredService<IConfigurationManager>();
-        var config = configManager.GetFederationConfiguration();
-        config.Enabled = false;
-        configManager.SaveConfiguration(FederationConfigurationStore.StoreKey, config);
+        var outboxRoot = await ParseJsonResponseAsync(outboxResponse);
+        Assert.Equal("OrderedCollection", outboxRoot.GetProperty("type").GetString());
+        Assert.True(outboxRoot.GetProperty("totalItems").GetInt32() > 0);
+        Assert.True(outboxRoot.TryGetProperty("first", out _));
+
+        // Phase 4: Unsigned request still sees empty outbox
+        var anonResponse = await _factory.CreateClient().GetAsync("Federation/Outbox");
+        Assert.Equal(HttpStatusCode.OK, anonResponse.StatusCode);
+
+        var anonRoot = await ParseJsonResponseAsync(anonResponse);
+        Assert.Equal(0, anonRoot.GetProperty("totalItems").GetInt32());
+        Assert.False(anonRoot.TryGetProperty("first", out _));
     }
 
     // =====================================================================
-    // Feature-gate tests: every federation-gated endpoint must return 404
-    // when Enabled=false, to hide the surface from servers that never
-    // shipped the feature. The gate is a policy-level invariant — these
-    // tests pin it so a future controller addition doesn't silently leak.
+    // Feature-gate tests
     // =====================================================================
 
     [Theory]
@@ -684,5 +496,193 @@ public class FederationTests : IClassFixture<JellyfinApplicationFactory>
 
         var response = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // =====================================================================
+    // Helpers
+    // =====================================================================
+
+    private void EnableFederation()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var configManager = scope.ServiceProvider.GetRequiredService<IConfigurationManager>();
+        var config = configManager.GetFederationConfiguration();
+        config.Enabled = true;
+        config.Hostname = "test.example";
+        config.ActorName = "jellyfin";
+        configManager.SaveConfiguration(FederationConfigurationStore.StoreKey, config);
+    }
+
+    private void DisableFederation()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var configManager = scope.ServiceProvider.GetRequiredService<IConfigurationManager>();
+        var config = configManager.GetFederationConfiguration();
+        config.Enabled = false;
+        configManager.SaveConfiguration(FederationConfigurationStore.StoreKey, config);
+    }
+
+    private async Task<string> GetAccessTokenAsync()
+    {
+        if (_cachedAccessToken is not null)
+        {
+            return _cachedAccessToken;
+        }
+
+        await _startupLock.WaitAsync();
+        try
+        {
+            if (_cachedAccessToken is not null)
+            {
+                return _cachedAccessToken;
+            }
+
+            var client = _factory.CreateClient();
+            _cachedAccessToken = await AuthHelper.CompleteStartupAsync(client);
+            return _cachedAccessToken;
+        }
+        finally
+        {
+            _startupLock.Release();
+        }
+    }
+
+    private async Task<HttpClient> CreateAuthenticatedClientAsync()
+    {
+        var client = _factory.CreateClient();
+        var token = await GetAccessTokenAsync();
+        client.DefaultRequestHeaders.AddAuthHeader(token);
+        return client;
+    }
+
+    private async Task UsingDbAsync(Func<JellyfinDbContext, Task> action)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var dbProvider = scope.ServiceProvider.GetRequiredService<IDbContextFactory<JellyfinDbContext>>();
+        var db = await dbProvider.CreateDbContextAsync();
+        await using (db)
+        {
+            await action(db);
+        }
+    }
+
+    private async Task SeedActorAsync(string actorUrl, string publicKeyPem)
+    {
+        await UsingDbAsync(async db =>
+        {
+            if (!await db.FederationActors.AnyAsync(a => a.Url == actorUrl))
+            {
+                var actor = new FederationActor(
+                    actorUrl, $"{actorUrl}/inbox", $"{actorUrl}/outbox", publicKeyPem);
+                await db.FederationActors.AddAsync(actor);
+                await db.SaveChangesAsync();
+            }
+        });
+    }
+
+    private async Task SeedActorWithFollowRequestAsync(
+        string actorUrl, string publicKeyPem, FederationFollowRequestType direction)
+    {
+        await UsingDbAsync(async db =>
+        {
+            var actor = await db.FederationActors.FirstOrDefaultAsync(a => a.Url == actorUrl);
+            if (actor is null)
+            {
+                actor = new FederationActor(
+                    actorUrl, $"{actorUrl}/inbox", $"{actorUrl}/outbox", publicKeyPem);
+                await db.FederationActors.AddAsync(actor);
+                await db.SaveChangesAsync();
+            }
+
+            if (!await db.FederationFollowRequests.AnyAsync(
+                    r => r.ActorId == actor.Id && r.Type == direction))
+            {
+                await db.FederationFollowRequests.AddAsync(new FederationFollowRequest(actor.Id, direction));
+                await db.SaveChangesAsync();
+            }
+        });
+    }
+
+    private async Task SeedActorWithFollowerAsync(string actorUrl, string publicKeyPem)
+    {
+        await UsingDbAsync(async db =>
+        {
+            if (!await db.FederationActors.AnyAsync(a => a.Url == actorUrl))
+            {
+                var actor = new FederationActor(
+                    actorUrl, $"{actorUrl}/inbox", $"{actorUrl}/outbox", publicKeyPem);
+                await db.FederationActors.AddAsync(actor);
+                await db.SaveChangesAsync();
+
+                await db.FederationFollowers.AddAsync(new FederationFollower(actor.Id));
+                await db.SaveChangesAsync();
+            }
+        });
+    }
+
+    private static async Task<JsonElement> ParseJsonResponseAsync(HttpResponseMessage response)
+    {
+        var content = await response.Content.ReadAsStringAsync();
+        return JsonDocument.Parse(content).RootElement;
+    }
+
+    private static async Task<HttpResponseMessage> PostActivityAsync(HttpClient client, object activity)
+    {
+        var content = JsonContent.Create(activity);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/activity+json");
+        return await client.PostAsync("Federation/Inbox", content);
+    }
+
+    private static HttpRequestMessage BuildSignedRequest(
+        HttpMethod method, string path, object? body, RSA rsa, string actorUrl)
+    {
+        byte[]? bodyBytes = body is null ? null : JsonSerializer.SerializeToUtf8Bytes(body);
+        return BuildSignedRequest(method, path, bodyBytes, rsa, actorUrl);
+    }
+
+    private static HttpRequestMessage BuildSignedRequest(
+        HttpMethod method, string path, byte[]? body, RSA rsa, string actorUrl)
+    {
+        var request = new HttpRequestMessage(method, path);
+
+        var components = new List<string> { "@method", "@authority", "@path" };
+        var signingLines = new List<string>
+        {
+            $"\"@method\": {method.Method}",
+            "\"@authority\": localhost",
+            $"\"@path\": /{path.Split('?')[0]}"
+        };
+
+        if (body is not null)
+        {
+            request.Content = new ByteArrayContent(body);
+            request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/activity+json");
+
+            var hash = SHA256.HashData(body);
+            var digestValue = $"sha-256=:{Convert.ToBase64String(hash)}:";
+            request.Content.Headers.TryAddWithoutValidation("Content-Digest", digestValue);
+
+            components.Add("content-digest");
+            components.Add("content-type");
+            signingLines.Add($"\"content-digest\": {digestValue}");
+            signingLines.Add("\"content-type\": application/activity+json");
+        }
+
+        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var keyId = $"{actorUrl}#main-key";
+        var componentList = string.Join(" ", components.Select(c => $"\"{c}\""));
+        var signatureParams = $"({componentList});created={created};keyid=\"{keyId}\"";
+        signingLines.Add($"\"@signature-params\": {signatureParams}");
+
+        var signingBase = string.Join('\n', signingLines);
+        var signatureBytes = rsa.SignData(
+            Encoding.UTF8.GetBytes(signingBase),
+            HashAlgorithmName.SHA512,
+            RSASignaturePadding.Pss);
+
+        request.Headers.TryAddWithoutValidation("Signature-Input", $"sig1={signatureParams}");
+        request.Headers.TryAddWithoutValidation("Signature", $"sig1=:{Convert.ToBase64String(signatureBytes)}:");
+
+        return request;
     }
 }
