@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Api.Models.FederationDtos;
 using MediaBrowser.Common.Api;
@@ -38,7 +39,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<PeerActor>>> GetFollowers()
     {
-        var followers = await _peerService.GetFollowersAsync().ConfigureAwait(false);
+        var followers = await _peerService.GetFollowersAsync(HttpContext.RequestAborted).ConfigureAwait(false);
         return Ok(followers);
     }
 
@@ -52,7 +53,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult> RemoveFollower([FromQuery, Required] string actorUrl)
     {
-        var removed = await _peerService.RemoveFollowerAsync(actorUrl).ConfigureAwait(false);
+        var removed = await _peerService.RemoveFollowerAsync(actorUrl, HttpContext.RequestAborted).ConfigureAwait(false);
         return removed ? NoContent() : NotFound();
     }
 
@@ -64,7 +65,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<PendingFollowRequest>>> GetFollowerRequests()
     {
-        var requests = await _peerService.GetFollowerRequestsAsync().ConfigureAwait(false);
+        var requests = await _peerService.GetFollowerRequestsAsync(HttpContext.RequestAborted).ConfigureAwait(false);
         return Ok(requests);
     }
 
@@ -81,7 +82,7 @@ public class FederationAdminController : BaseJellyfinApiController
         [FromQuery, Required] string actorUrl,
         [FromBody] VetFollowerRequest body)
     {
-        var result = await _peerService.VetFollowerAsync(actorUrl, body.Accept).ConfigureAwait(false);
+        var result = await _peerService.VetFollowerAsync(actorUrl, body.Accept, HttpContext.RequestAborted).ConfigureAwait(false);
         return result switch
         {
             VetFollowRequestResult.Success => NoContent(),
@@ -98,7 +99,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<PeerActor>>> GetFollowing()
     {
-        var following = await _peerService.GetFollowingAsync().ConfigureAwait(false);
+        var following = await _peerService.GetFollowingAsync(HttpContext.RequestAborted).ConfigureAwait(false);
         return Ok(following);
     }
 
@@ -112,7 +113,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult> RemoveFollowing([FromQuery, Required] string actorUrl)
     {
-        var removed = await _peerService.RemoveFollowingAsync(actorUrl).ConfigureAwait(false);
+        var removed = await _peerService.RemoveFollowingAsync(actorUrl, HttpContext.RequestAborted).ConfigureAwait(false);
         return removed ? NoContent() : NotFound();
     }
 
@@ -124,7 +125,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<PendingFollowRequest>>> GetFollowingRequests()
     {
-        var requests = await _peerService.GetFollowingRequestsAsync().ConfigureAwait(false);
+        var requests = await _peerService.GetFollowingRequestsAsync(HttpContext.RequestAborted).ConfigureAwait(false);
         return Ok(requests);
     }
 
@@ -139,7 +140,7 @@ public class FederationAdminController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status502BadGateway)]
     public async Task<ActionResult> SendFollowRequest([FromQuery, Required] string actorUrl)
     {
-        var result = await _peerService.SendFollowRequestAsync(actorUrl).ConfigureAwait(false);
+        var result = await _peerService.SendFollowRequestAsync(actorUrl, HttpContext.RequestAborted).ConfigureAwait(false);
         return result switch
         {
             FollowRequestResult.Success => NoContent(),

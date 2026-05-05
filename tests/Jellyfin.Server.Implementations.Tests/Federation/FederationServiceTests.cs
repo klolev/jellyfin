@@ -89,7 +89,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.HandleFollowRequestAsync(It.IsAny<string>()), Times.Never);
+        _peerServiceMock.Verify(p => p.HandleFollowRequestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // --- Follow ---
@@ -105,7 +105,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.HandleFollowRequestAsync(SignerUrl), Times.Once);
+        _peerServiceMock.Verify(p => p.HandleFollowRequestAsync(SignerUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // --- Accept ---
@@ -157,7 +157,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.RemoveFollowerAsync(SignerUrl), Times.Once);
+        _peerServiceMock.Verify(p => p.RemoveFollowerAsync(SignerUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -175,7 +175,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.RemoveFollowerAsync(It.IsAny<string>()), Times.Never);
+        _peerServiceMock.Verify(p => p.RemoveFollowerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public sealed class FederationServiceTests : IDisposable
 
         await _sut.HandleInboxActivityAsync(activity, SignerUrl);
 
-        _peerServiceMock.Verify(p => p.RemoveFollowerAsync(It.IsAny<string>()), Times.Never);
+        _peerServiceMock.Verify(p => p.RemoveFollowerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // --- Create/Update/Delete ---
@@ -255,7 +255,7 @@ public sealed class FederationServiceTests : IDisposable
     public async Task HandleInbox_HandlerThrows_ExceptionPropagates()
     {
         _peerServiceMock
-            .Setup(p => p.HandleFollowRequestAsync(It.IsAny<string>()))
+            .Setup(p => p.HandleFollowRequestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("DB down"));
 
         var activity = new Follow

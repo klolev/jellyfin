@@ -61,15 +61,16 @@ public class FederationPeerService : IFederationPeerService
     /// Handles storing a follow request from an actor.
     /// </summary>
     /// <param name="actorUrl">The actor URL.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>Nothing.</returns>
-    public async Task HandleFollowRequestAsync(string actorUrl)
+    public async Task HandleFollowRequestAsync(string actorUrl, CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             // Signature validation at inbox time guarantees the actor row exists by now.
             var actor = await dbContext.FederationActors
-                .FirstOrDefaultAsync(a => a.Url == actorUrl)
+                .FirstOrDefaultAsync(a => a.Url == actorUrl, cancellationToken)
                 .ConfigureAwait(false);
             if (actor is null)
             {
@@ -78,15 +79,15 @@ public class FederationPeerService : IFederationPeerService
             }
 
             var exists = await dbContext.FederationFollowRequests
-                .AnyAsync(request => request.ActorId == actor.Id && request.Type == FederationFollowRequestType.Follower)
+                .AnyAsync(request => request.ActorId == actor.Id && request.Type == FederationFollowRequestType.Follower, cancellationToken)
                 .ConfigureAwait(false);
             if (exists)
             {
                 return;
             }
 
-            await dbContext.FederationFollowRequests.AddAsync(new FederationFollowRequest(actor.Id, FederationFollowRequestType.Follower)).ConfigureAwait(false);
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.FederationFollowRequests.AddAsync(new FederationFollowRequest(actor.Id, FederationFollowRequestType.Follower), cancellationToken).ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -94,16 +95,17 @@ public class FederationPeerService : IFederationPeerService
     /// Sends a follow request to a remote actor.
     /// </summary>
     /// <param name="actorUrl">The actor URL to follow.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The result of the operation.</returns>
-    public async Task<FollowRequestResult> SendFollowRequestAsync(string actorUrl)
+    public async Task<FollowRequestResult> SendFollowRequestAsync(string actorUrl, CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             // Check if already following or pending
             var alreadyFollowing = await dbContext.FederationFollowings
                 .Include(f => f.Actor)
-                .AnyAsync(f => f.Actor.Url == actorUrl)
+                .AnyAsync(f => f.Actor.Url == actorUrl, cancellationToken)
                 .ConfigureAwait(false);
             if (alreadyFollowing)
             {
@@ -111,7 +113,7 @@ public class FederationPeerService : IFederationPeerService
             }
 
             var pendingRequest = await dbContext.FederationFollowRequests
-                .AnyAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Following && !r.Responded)
+                .AnyAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Following && !r.Responded, cancellationToken)
                 .ConfigureAwait(false);
             if (pendingRequest)
             {
@@ -128,9 +130,9 @@ public class FederationPeerService : IFederationPeerService
                 await _signingService.SignAsync(request).ConfigureAwait(false);
 
                 var client = _httpClientFactory.CreateClient();
-                using var response = await client.SendAsync(request).ConfigureAwait(false);
+                using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
-                var fetchedActor = await response.Content.ReadFromJsonAsync<ActorResponse>().ConfigureAwait(false);
+                var fetchedActor = await response.Content.ReadFromJsonAsync<ActorResponse>(cancellationToken).ConfigureAwait(false);
                 if (fetchedActor == null || string.IsNullOrEmpty(fetchedActor.Inbox) || string.IsNullOrEmpty(fetchedActor.Outbox) || string.IsNullOrEmpty(fetchedActor.PublicKey?.PublicKeyPem))
                 {
                     return FollowRequestResult.ActorFetchFailed;
@@ -157,18 +159,18 @@ public class FederationPeerService : IFederationPeerService
 
             // Create or get the actor entry
             var federationActor = await dbContext.FederationActors
-                .FirstOrDefaultAsync(a => a.Url == actorUrl)
+                .FirstOrDefaultAsync(a => a.Url == actorUrl, cancellationToken)
                 .ConfigureAwait(false);
             if (federationActor == null)
             {
                 federationActor = new FederationActor(actorUrl, actor.Inbox, actor.Outbox, actor.PublicKey.PublicKeyPem);
-                await dbContext.FederationActors.AddAsync(federationActor).ConfigureAwait(false);
-                await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                await dbContext.FederationActors.AddAsync(federationActor, cancellationToken).ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             }
 
             // Create follow request record
             await dbContext.FederationFollowRequests
-                .AddAsync(new FederationFollowRequest(federationActor.Id, FederationFollowRequestType.Following))
+                .AddAsync(new FederationFollowRequest(federationActor.Id, FederationFollowRequestType.Following), cancellationToken)
                 .ConfigureAwait(false);
 
             // Queue the Follow activity for delivery
@@ -182,9 +184,9 @@ public class FederationPeerService : IFederationPeerService
             };
 
             var activityJson = System.Text.Json.JsonSerializer.Serialize(followActivity, ActivityStreamsJsonOptions.Default);
-            await dbContext.EnqueueDeliverAsync(federationActor.Id, federationActor.InboxUrl, activityJson).ConfigureAwait(false);
+            await dbContext.EnqueueDeliverAsync(federationActor.Id, federationActor.InboxUrl, activityJson, cancellationToken).ConfigureAwait(false);
 
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return FollowRequestResult.Success;
         }
     }
@@ -194,15 +196,16 @@ public class FederationPeerService : IFederationPeerService
     /// </summary>
     /// <param name="actorUrl">The actor URL.</param>
     /// <param name="accept">Whether to accept the follower.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The result of the operation.</returns>
-    public async Task<VetFollowRequestResult> VetFollowerAsync(string actorUrl, bool accept)
+    public async Task<VetFollowRequestResult> VetFollowerAsync(string actorUrl, bool accept, CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             var request = await dbContext.FederationFollowRequests
                 .Include(r => r.Actor)
-                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Follower && !r.Responded)
+                .FirstOrDefaultAsync(r => r.Actor.Url == actorUrl && r.Type == FederationFollowRequestType.Follower && !r.Responded, cancellationToken)
                 .ConfigureAwait(false);
             if (request is null)
             {
@@ -214,8 +217,8 @@ public class FederationPeerService : IFederationPeerService
             if (!accept)
             {
                 // Best-effort: notify the remote via Reject{Follow} through the delivery queue.
-                await QueueRejectFollowAsync(dbContext, request.Actor).ConfigureAwait(false);
-                await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                await QueueRejectFollowAsync(dbContext, request.Actor, cancellationToken).ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 return VetFollowRequestResult.Success;
             }
 
@@ -235,17 +238,17 @@ public class FederationPeerService : IFederationPeerService
             };
 
             var activityJson = System.Text.Json.JsonSerializer.Serialize(acceptActivity, ActivityStreamsJsonOptions.Default);
-            await dbContext.EnqueueDeliverAsync(request.Actor.Id, request.Actor.InboxUrl, activityJson).ConfigureAwait(false);
+            await dbContext.EnqueueDeliverAsync(request.Actor.Id, request.Actor.InboxUrl, activityJson, cancellationToken).ConfigureAwait(false);
 
             await dbContext.FederationFollowers
-                .AddAsync(new FederationFollower(request.Actor.Id))
+                .AddAsync(new FederationFollower(request.Actor.Id), cancellationToken)
                 .ConfigureAwait(false);
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return VetFollowRequestResult.Success;
         }
     }
 
-    private async Task QueueRejectFollowAsync(JellyfinDbContext dbContext, FederationActor actor)
+    private async Task QueueRejectFollowAsync(JellyfinDbContext dbContext, FederationActor actor, CancellationToken cancellationToken)
     {
         var config = _configManager.GetFederationConfiguration();
         var ourActorUrl = config.ActorURL;
@@ -261,7 +264,7 @@ public class FederationPeerService : IFederationPeerService
         };
 
         var activityJson = System.Text.Json.JsonSerializer.Serialize(rejectActivity, ActivityStreamsJsonOptions.Default);
-        await dbContext.EnqueueDeliverAsync(actor.Id, actor.InboxUrl, activityJson).ConfigureAwait(false);
+        await dbContext.EnqueueDeliverAsync(actor.Id, actor.InboxUrl, activityJson, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -333,17 +336,18 @@ public class FederationPeerService : IFederationPeerService
     /// <summary>
     /// Gets the list of followers.
     /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The list of followers.</returns>
-    public async Task<IReadOnlyList<PeerActor>> GetFollowersAsync()
+    public async Task<IReadOnlyList<PeerActor>> GetFollowersAsync(CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             return await dbContext.FederationFollowers
                 .AsNoTracking()
                 .Include(f => f.Actor)
                 .Select(f => new PeerActor(f.Actor.Url, f.Actor.InboxUrl, f.Actor.OutboxUrl, f.Actor.PublicKey))
-                .ToListAsync()
+                .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -351,32 +355,33 @@ public class FederationPeerService : IFederationPeerService
     /// <summary>
     /// Gets the list of actors this instance follows.
     /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The list of following.</returns>
-    public async Task<IReadOnlyList<PeerActor>> GetFollowingAsync()
+    public async Task<IReadOnlyList<PeerActor>> GetFollowingAsync(CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             return await dbContext.FederationFollowings
                 .AsNoTracking()
                 .Include(f => f.Actor)
                 .Select(f => new PeerActor(f.Actor.Url, f.Actor.InboxUrl, f.Actor.OutboxUrl, f.Actor.PublicKey))
-                .ToListAsync()
+                .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
     }
 
     /// <inheritdoc/>
-    public async Task<IReadOnlyList<PendingFollowRequest>> GetFollowerRequestsAsync()
-        => await GetPendingRequestsAsync(FederationFollowRequestType.Follower).ConfigureAwait(false);
+    public async Task<IReadOnlyList<PendingFollowRequest>> GetFollowerRequestsAsync(CancellationToken cancellationToken = default)
+        => await GetPendingRequestsAsync(FederationFollowRequestType.Follower, cancellationToken).ConfigureAwait(false);
 
     /// <inheritdoc/>
-    public async Task<IReadOnlyList<PendingFollowRequest>> GetFollowingRequestsAsync()
-        => await GetPendingRequestsAsync(FederationFollowRequestType.Following).ConfigureAwait(false);
+    public async Task<IReadOnlyList<PendingFollowRequest>> GetFollowingRequestsAsync(CancellationToken cancellationToken = default)
+        => await GetPendingRequestsAsync(FederationFollowRequestType.Following, cancellationToken).ConfigureAwait(false);
 
-    private async Task<IReadOnlyList<PendingFollowRequest>> GetPendingRequestsAsync(FederationFollowRequestType type)
+    private async Task<IReadOnlyList<PendingFollowRequest>> GetPendingRequestsAsync(FederationFollowRequestType type, CancellationToken cancellationToken)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             return await dbContext.FederationFollowRequests
@@ -385,7 +390,7 @@ public class FederationPeerService : IFederationPeerService
                 .Where(r => r.Type == type && !r.Responded)
                 .OrderByDescending(r => r.DateCreated)
                 .Select(r => new PendingFollowRequest(r.Actor.Url, r.DateCreated))
-                .ToListAsync()
+                .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -394,15 +399,16 @@ public class FederationPeerService : IFederationPeerService
     /// Removes a follower by actor URL.
     /// </summary>
     /// <param name="actorUrl">The actor URL to remove.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>True if the follower was found and removed.</returns>
-    public async Task<bool> RemoveFollowerAsync(string actorUrl)
+    public async Task<bool> RemoveFollowerAsync(string actorUrl, CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             var follower = await dbContext.FederationFollowers
                 .Include(f => f.Actor)
-                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl)
+                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl, cancellationToken)
                 .ConfigureAwait(false);
             if (follower == null)
             {
@@ -410,7 +416,7 @@ public class FederationPeerService : IFederationPeerService
             }
 
             dbContext.FederationFollowers.Remove(follower);
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return true;
         }
     }
@@ -419,15 +425,16 @@ public class FederationPeerService : IFederationPeerService
     /// Removes a following by actor URL and queues an Undo{Follow} for delivery.
     /// </summary>
     /// <param name="actorUrl">The actor URL to unfollow.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>True if the following was found and removed.</returns>
-    public async Task<bool> RemoveFollowingAsync(string actorUrl)
+    public async Task<bool> RemoveFollowingAsync(string actorUrl, CancellationToken cancellationToken = default)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             var following = await dbContext.FederationFollowings
                 .Include(f => f.Actor)
-                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl)
+                .FirstOrDefaultAsync(f => f.Actor.Url == actorUrl, cancellationToken)
                 .ConfigureAwait(false);
             if (following == null)
             {
@@ -449,10 +456,10 @@ public class FederationPeerService : IFederationPeerService
             };
 
             var activityJson = System.Text.Json.JsonSerializer.Serialize(undoActivity, ActivityStreamsJsonOptions.Default);
-            await dbContext.EnqueueDeliverAsync(following.ActorId, following.Actor.InboxUrl, activityJson).ConfigureAwait(false);
+            await dbContext.EnqueueDeliverAsync(following.ActorId, following.Actor.InboxUrl, activityJson, cancellationToken).ConfigureAwait(false);
 
             dbContext.FederationFollowings.Remove(following);
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return true;
         }
     }

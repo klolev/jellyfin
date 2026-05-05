@@ -174,7 +174,7 @@ public class FederationService : IFederationService
             switch (activity.Type)
             {
                 case nameof(Follow):
-                    await _peerService.HandleFollowRequestAsync(signingActorUrl).ConfigureAwait(false);
+                    await _peerService.HandleFollowRequestAsync(signingActorUrl, cancellationToken).ConfigureAwait(false);
                     break;
 
                 case nameof(Accept):
@@ -204,7 +204,7 @@ public class FederationService : IFederationService
                         break;
                     }
 
-                    await _peerService.RemoveFollowerAsync(signingActorUrl).ConfigureAwait(false);
+                    await _peerService.RemoveFollowerAsync(signingActorUrl, cancellationToken).ConfigureAwait(false);
                     break;
 
                 case nameof(Create):
