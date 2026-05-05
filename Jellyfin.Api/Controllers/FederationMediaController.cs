@@ -103,7 +103,6 @@ public class FederationMediaController : BaseJellyfinApiController
         }
 
         var dbContext = await _dbFactory.CreateDbContextAsync(HttpContext.RequestAborted).ConfigureAwait(false);
-        int followerId;
         await using (dbContext.ConfigureAwait(false))
         {
             var follower = await dbContext.FederationFollowers
@@ -115,26 +114,24 @@ public class FederationMediaController : BaseJellyfinApiController
                 return Unauthorized();
             }
 
-            followerId = follower.Id;
+            if (_libraryManager.GetItemById(itemId) is null)
+            {
+                return NotFound();
+            }
+
+            var rawToken = await _tokenService.IssueAsync(follower.Id, itemId, DefaultTokenTtl, HttpContext.RequestAborted).ConfigureAwait(false);
+            var expiresAt = DateTime.UtcNow.Add(DefaultTokenTtl);
+
+            var config = _configManager.GetFederationConfiguration();
+            var streamUrl = $"{config.BaseURL}/Federation/Media/{itemId:N}/Stream?token={rawToken}";
+
+            return Ok(new FederationStreamTokenResponse
+            {
+                Token = rawToken,
+                ExpiresAt = expiresAt,
+                StreamUrl = streamUrl
+            });
         }
-
-        if (_libraryManager.GetItemById(itemId) is null)
-        {
-            return NotFound();
-        }
-
-        var rawToken = await _tokenService.IssueAsync(followerId, itemId, DefaultTokenTtl, HttpContext.RequestAborted).ConfigureAwait(false);
-        var expiresAt = DateTime.UtcNow.Add(DefaultTokenTtl);
-
-        var config = _configManager.GetFederationConfiguration();
-        var streamUrl = $"{config.BaseURL}/Federation/Media/{itemId:N}/Stream?token={rawToken}";
-
-        return Ok(new FederationStreamTokenResponse
-        {
-            Token = rawToken,
-            ExpiresAt = expiresAt,
-            StreamUrl = streamUrl
-        });
     }
 
     /// <summary>

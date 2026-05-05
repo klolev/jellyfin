@@ -30,6 +30,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
     private readonly IDbContextFactory<JellyfinDbContext> _dbProvider;
     private readonly IConfigurationManager _configManager;
     private readonly ILogger<FederationLibraryPublisher> _logger;
+    private CancellationTokenSource _cts = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FederationLibraryPublisher"/> class.
@@ -53,6 +54,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        _cts = new CancellationTokenSource();
         _libraryManager.ItemAdded += OnItemAdded;
         _libraryManager.ItemUpdated += OnItemUpdated;
         _libraryManager.ItemRemoved += OnItemRemoved;
@@ -60,12 +62,12 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
     }
 
     /// <inheritdoc />
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         _libraryManager.ItemAdded -= OnItemAdded;
         _libraryManager.ItemUpdated -= OnItemUpdated;
         _libraryManager.ItemRemoved -= OnItemRemoved;
-        return Task.CompletedTask;
+        await _cts.CancelAsync().ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -74,6 +76,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
         _libraryManager.ItemAdded -= OnItemAdded;
         _libraryManager.ItemUpdated -= OnItemUpdated;
         _libraryManager.ItemRemoved -= OnItemRemoved;
+        _cts.Dispose();
     }
 
     private void OnItemAdded(object? sender, ItemChangeEventArgs e)
@@ -83,17 +86,23 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             return;
         }
 
-        _ = Task.Run(async () =>
-        {
-            try
+        var token = _cts.Token;
+        _ = Task.Run(
+            async () =>
             {
-                await HandleLocalItemAddedAsync(e.Item).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unhandled error publishing federation Create for added item {ItemName}", e.Item.Name);
-            }
-        });
+                try
+                {
+                    await HandleLocalItemAddedAsync(e.Item, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unhandled error publishing federation Create for added item {ItemName}", e.Item.Name);
+                }
+            },
+            token);
     }
 
     private void OnItemUpdated(object? sender, ItemChangeEventArgs e)
@@ -109,17 +118,23 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             return;
         }
 
-        _ = Task.Run(async () =>
-        {
-            try
+        var token = _cts.Token;
+        _ = Task.Run(
+            async () =>
             {
-                await PublishCreateAsync(e.Item).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unhandled error publishing federation Update for {ItemName}", e.Item.Name);
-            }
-        });
+                try
+                {
+                    await PublishCreateAsync(e.Item, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unhandled error publishing federation Update for {ItemName}", e.Item.Name);
+                }
+            },
+            token);
     }
 
     private void OnItemRemoved(object? sender, ItemChangeEventArgs e)
@@ -129,17 +144,23 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             return;
         }
 
-        _ = Task.Run(async () =>
-        {
-            try
+        var token = _cts.Token;
+        _ = Task.Run(
+            async () =>
             {
-                await PublishDeleteAsync(e.Item).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unhandled error publishing federation Delete for {ItemName}", e.Item.Name);
-            }
-        });
+                try
+                {
+                    await PublishDeleteAsync(e.Item, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unhandled error publishing federation Delete for {ItemName}", e.Item.Name);
+                }
+            },
+            token);
     }
 
     /// <summary>
@@ -149,18 +170,18 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
     /// before publication so followers receive a Create pointing at the canonical (now local)
     /// BaseItem, and their own ingesters dedup accordingly.
     /// </summary>
-    private async Task HandleLocalItemAddedAsync(BaseItem item)
+    private async Task HandleLocalItemAddedAsync(BaseItem item, CancellationToken cancellationToken)
     {
         try
         {
-            await ReconcileWithVirtualAsync(item).ConfigureAwait(false);
+            await ReconcileWithVirtualAsync(item, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to reconcile local item {ItemName} with virtual federated items", item.Name);
         }
 
-        await PublishCreateAsync(item).ConfigureAwait(false);
+        await PublishCreateAsync(item, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -170,7 +191,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
     /// delete the virtual. Local items trump virtuals so the user's library never grows duplicates
     /// when a movie they've added locally was also advertised by a followed peer.
     /// </summary>
-    private async Task ReconcileWithVirtualAsync(BaseItem localItem)
+    private async Task ReconcileWithVirtualAsync(BaseItem localItem, CancellationToken cancellationToken)
     {
         if (localItem.ProviderIds is null || localItem.ProviderIds.Count == 0)
         {
@@ -202,7 +223,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
         }
 
         var localItemId = localItem.Id;
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
             foreach (var virtualItem in virtuals)
@@ -210,7 +231,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
                 var virtualId = virtualItem.Id;
                 await dbContext.FederationIngestedItems
                     .Where(r => r.BaseItemId.Equals(virtualId))
-                    .ExecuteUpdateAsync(s => s.SetProperty(r => r.BaseItemId, localItemId))
+                    .ExecuteUpdateAsync(s => s.SetProperty(r => r.BaseItemId, localItemId), cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -226,7 +247,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
         }
     }
 
-    private async Task PublishCreateAsync(BaseItem item)
+    private async Task PublishCreateAsync(BaseItem item, CancellationToken cancellationToken)
     {
         var config = _configManager.GetFederationConfiguration();
         if (!config.Enabled || string.IsNullOrEmpty(config.Hostname))
@@ -246,7 +267,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             var builder = new FederationLibraryItemActivityBuilder(libraryItem, actorUrl);
             var activityJson = JsonSerializer.Serialize(builder.BuildActivity(), ActivityStreamsJsonOptions.Default);
 
-            await PublishToOutboxAsync(activityJson, item.Name).ConfigureAwait(false);
+            await PublishToOutboxAsync(activityJson, item.Name, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -254,7 +275,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
         }
     }
 
-    private async Task PublishDeleteAsync(BaseItem item)
+    private async Task PublishDeleteAsync(BaseItem item, CancellationToken cancellationToken)
     {
         var config = _configManager.GetFederationConfiguration();
         if (!config.Enabled || string.IsNullOrEmpty(config.Hostname))
@@ -274,7 +295,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             var builder = new FederationLibraryItemActivityBuilder(libraryItem, actorUrl);
             var activityJson = JsonSerializer.Serialize(builder.BuildDeleteActivity(), ActivityStreamsJsonOptions.Default);
 
-            await PublishToOutboxAsync(activityJson, item.Name).ConfigureAwait(false);
+            await PublishToOutboxAsync(activityJson, item.Name, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -291,17 +312,17 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
     private static bool IsVirtualFederatedItem(BaseItem item)
         => item.ExternalId is not null && item.ExternalId.StartsWith(VirtualExternalIdPrefix, StringComparison.Ordinal);
 
-    private async Task PublishToOutboxAsync(string activityJson, string itemName)
+    private async Task PublishToOutboxAsync(string activityJson, string itemName, CancellationToken cancellationToken)
     {
-        var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+        var dbContext = await _dbProvider.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
-            var transaction = await dbContext.Database.BeginTransactionAsync().ConfigureAwait(false);
+            var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             await using (transaction.ConfigureAwait(false))
             {
                 // Store in the outbox activity log
                 await dbContext.FederationOutboxActivities
-                    .AddAsync(new FederationOutboxActivity(activityJson))
+                    .AddAsync(new FederationOutboxActivity(activityJson), cancellationToken)
                     .ConfigureAwait(false);
 
                 // Queue delivery to every follower's actor queue. We pick up the InboxUrl here so the
@@ -309,16 +330,16 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
                 var followers = await dbContext.FederationFollowers
                     .Include(f => f.Actor)
                     .Select(f => new { f.ActorId, f.Actor.InboxUrl })
-                    .ToListAsync()
+                    .ToListAsync(cancellationToken)
                     .ConfigureAwait(false);
 
                 foreach (var follower in followers)
                 {
-                    await dbContext.EnqueueDeliverAsync(follower.ActorId, follower.InboxUrl, activityJson).ConfigureAwait(false);
+                    await dbContext.EnqueueDeliverAsync(follower.ActorId, follower.InboxUrl, activityJson, cancellationToken).ConfigureAwait(false);
                 }
 
-                await dbContext.SaveChangesAsync().ConfigureAwait(false);
-                await transaction.CommitAsync().ConfigureAwait(false);
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 
