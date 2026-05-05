@@ -296,25 +296,30 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
         var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
         await using (dbContext.ConfigureAwait(false))
         {
-            // Store in the outbox activity log
-            await dbContext.FederationOutboxActivities
-                .AddAsync(new FederationOutboxActivity(activityJson))
-                .ConfigureAwait(false);
-
-            // Queue delivery to every follower's actor queue. We pick up the InboxUrl here so the
-            // worker doesn't have to re-resolve it at processing time.
-            var followers = await dbContext.FederationFollowers
-                .Include(f => f.Actor)
-                .Select(f => new { f.ActorId, f.Actor.InboxUrl })
-                .ToListAsync()
-                .ConfigureAwait(false);
-
-            foreach (var follower in followers)
+            var transaction = await dbContext.Database.BeginTransactionAsync().ConfigureAwait(false);
+            await using (transaction.ConfigureAwait(false))
             {
-                await dbContext.EnqueueDeliverAsync(follower.ActorId, follower.InboxUrl, activityJson).ConfigureAwait(false);
-            }
+                // Store in the outbox activity log
+                await dbContext.FederationOutboxActivities
+                    .AddAsync(new FederationOutboxActivity(activityJson))
+                    .ConfigureAwait(false);
 
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                // Queue delivery to every follower's actor queue. We pick up the InboxUrl here so the
+                // worker doesn't have to re-resolve it at processing time.
+                var followers = await dbContext.FederationFollowers
+                    .Include(f => f.Actor)
+                    .Select(f => new { f.ActorId, f.Actor.InboxUrl })
+                    .ToListAsync()
+                    .ConfigureAwait(false);
+
+                foreach (var follower in followers)
+                {
+                    await dbContext.EnqueueDeliverAsync(follower.ActorId, follower.InboxUrl, activityJson).ConfigureAwait(false);
+                }
+
+                await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                await transaction.CommitAsync().ConfigureAwait(false);
+            }
         }
 
         _logger.LogDebug("Published federation activity for {ItemName}", itemName);
