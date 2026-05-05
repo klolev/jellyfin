@@ -136,6 +136,12 @@ public class FederationPeerService : IFederationPeerService
                     return FollowRequestResult.ActorFetchFailed;
                 }
 
+                if (!string.Equals(fetchedActor.Id, actorUrl, StringComparison.Ordinal))
+                {
+                    _logger.LogWarning("Actor fetch for {ActorUrl} returned mismatched id {ActorId}; rejecting", actorUrl, fetchedActor.Id);
+                    return FollowRequestResult.ActorFetchFailed;
+                }
+
                 actor = fetchedActor;
             }
             catch (HttpRequestException ex)

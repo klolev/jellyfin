@@ -181,6 +181,12 @@ public class LocalKeyProvider : IHTTPSignatureKeyProvider
                 return null;
             }
 
+            if (!string.Equals(actor.Id, actorUrl, StringComparison.Ordinal))
+            {
+                _logger.LogWarning("Actor {ActorUrl} returned a document with mismatched id {ActorId}; rejecting to prevent redirect-based impersonation", actorUrl, actor.Id);
+                return null;
+            }
+
             return actor;
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested)
