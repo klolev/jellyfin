@@ -98,7 +98,7 @@ public class FederationController : BaseJellyfinApiController
             return BadRequest();
         }
 
-        await _federationService.HandleInboxActivityAsync(activity, signingActor).ConfigureAwait(false);
+        await _federationService.HandleInboxActivityAsync(activity, signingActor, HttpContext.RequestAborted).ConfigureAwait(false);
         return Accepted();
     }
 

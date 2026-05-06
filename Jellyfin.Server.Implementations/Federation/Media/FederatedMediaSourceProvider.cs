@@ -122,7 +122,7 @@ public sealed class FederatedMediaSourceProvider : IMediaSourceProvider
 
         await _signingService.SignAsync(request).ConfigureAwait(false);
 
-        var httpClient = _httpClientFactory.CreateClient(NamedClient.Default);
+        var httpClient = _httpClientFactory.CreateClient(NamedClient.Federation);
         httpClient.Timeout = RemoteTokenRequestTimeout;
         using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
 

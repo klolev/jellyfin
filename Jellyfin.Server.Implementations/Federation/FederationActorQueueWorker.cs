@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities.Federation;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Federation.Configuration;
 using MediaBrowser.Controller.Federation.Peers;
 using MediaBrowser.Controller.Federation.Signing;
@@ -134,7 +135,7 @@ public sealed class FederationActorQueueWorker : BackgroundService
                 return;
             }
 
-            var client = _httpClientFactory.CreateClient();
+            var client = _httpClientFactory.CreateClient(NamedClient.Federation);
 
             while (!cancellationToken.IsCancellationRequested)
             {
