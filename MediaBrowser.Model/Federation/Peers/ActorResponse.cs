@@ -10,10 +10,21 @@ public class ActorResponse
     /// <summary>
     /// Initializes a new instance of the <see cref="ActorResponse"/> class.
     /// </summary>
+    public ActorResponse()
+    {
+        Id = string.Empty;
+        Inbox = string.Empty;
+        Outbox = string.Empty;
+        PublicKey = new PublicKeyResponse(string.Empty);
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ActorResponse"/> class.
+    /// </summary>
     /// <param name="id">The actor id.</param>
     /// <param name="inbox">The actor inbox.</param>
     /// <param name="outbox">The actor outbox.</param>
-    /// <param name="publicKey">The actor public key.</param>
+    /// <param name="publicKey">The actor public key PEM.</param>
     public ActorResponse(string id, string inbox, string outbox, string publicKey)
     {
         Id = id;
@@ -51,6 +62,14 @@ public class ActorResponse
     /// </summary>
     public class PublicKeyResponse
     {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="PublicKeyResponse"/> class.
+        /// </summary>
+        public PublicKeyResponse()
+        {
+            PublicKeyPem = string.Empty;
+        }
+
         /// <summary>
         /// Initializes a new instance of the <see cref="PublicKeyResponse"/> class.
         /// </summary>

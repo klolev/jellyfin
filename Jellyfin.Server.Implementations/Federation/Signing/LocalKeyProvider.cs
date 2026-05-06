@@ -1,10 +1,7 @@
 using System;
-using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -71,11 +68,9 @@ public class LocalKeyProvider : IHTTPSignatureKeyProvider
             return null;
         }
 
-        if (!await ResolvesToPublicAddressAsync(actorUrl).ConfigureAwait(false))
-        {
-            _logger.LogWarning("Rejecting actor URL {ActorUrl}: resolves to a private/loopback address", actorUrl);
-            return null;
-        }
+        // SSRF protection is enforced at the socket level by the Federation named client's
+        // ConnectCallback (FederationSsrfGuard), which validates the resolved IP is public
+        // before completing the TCP handshake. No pre-resolution needed.
 
         // First contact: fetch, validate, store.
         var fetched = await TryFetchActorAsync(actorUrl).ConfigureAwait(false);
@@ -115,52 +110,13 @@ public class LocalKeyProvider : IHTTPSignatureKeyProvider
             && !string.IsNullOrEmpty(uri.Host);
     }
 
-    private static bool IsPrivateOrLoopback(IPAddress address)
-    {
-        if (IPAddress.IsLoopback(address))
-        {
-            return true;
-        }
-
-        if (address.AddressFamily == AddressFamily.InterNetworkV6 && address.IsIPv6LinkLocal)
-        {
-            return true;
-        }
-
-        return NetworkConstants.IPv4RFC1918PrivateClassA.Contains(address)
-            || NetworkConstants.IPv4RFC1918PrivateClassB.Contains(address)
-            || NetworkConstants.IPv4RFC1918PrivateClassC.Contains(address)
-            || NetworkConstants.IPv4RFC3927LinkLocal.Contains(address)
-            || NetworkConstants.IPv6RFC4193UniqueLocal.Contains(address)
-            || NetworkConstants.IPv6RFC4291SiteLocal.Contains(address);
-    }
-
-    private async Task<bool> ResolvesToPublicAddressAsync(string url)
-    {
-        var uri = new Uri(url);
-        try
-        {
-            var addresses = await Dns.GetHostAddressesAsync(uri.Host).ConfigureAwait(false);
-            if (addresses.Length == 0)
-            {
-                return false;
-            }
-
-            return !addresses.Any(IsPrivateOrLoopback);
-        }
-        catch (SocketException)
-        {
-            return false;
-        }
-    }
-
     private async Task<ActorResponse?> TryFetchActorAsync(string actorUrl)
     {
         using var cts = new CancellationTokenSource(ActorFetchTimeout);
 
         try
         {
-            using var client = _httpClientFactory.CreateClient(NamedClient.Default);
+            using var client = _httpClientFactory.CreateClient(NamedClient.Federation);
             using var request = new HttpRequestMessage(HttpMethod.Get, actorUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/activity+json"));
 

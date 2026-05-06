@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities.Federation;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Federation.Configuration;
 using MediaBrowser.Controller.Federation.Peers;
 using MediaBrowser.Controller.Federation.Signing;
@@ -129,7 +130,7 @@ public class FederationPeerService : IFederationPeerService
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/activity+json"));
                 await _signingService.SignAsync(request).ConfigureAwait(false);
 
-                var client = _httpClientFactory.CreateClient();
+                var client = _httpClientFactory.CreateClient(NamedClient.Federation);
                 using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
                 var fetchedActor = await response.Content.ReadFromJsonAsync<ActorResponse>(cancellationToken).ConfigureAwait(false);

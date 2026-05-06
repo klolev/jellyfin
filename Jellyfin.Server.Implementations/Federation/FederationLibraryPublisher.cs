@@ -124,7 +124,7 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             {
                 try
                 {
-                    await PublishCreateAsync(e.Item, token).ConfigureAwait(false);
+                    await PublishUpdateAsync(e.Item, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -247,7 +247,20 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
         }
     }
 
-    private async Task PublishCreateAsync(BaseItem item, CancellationToken cancellationToken)
+    private Task PublishCreateAsync(BaseItem item, CancellationToken cancellationToken)
+        => PublishActivityAsync(item, b => b.BuildActivity(), "Create", cancellationToken);
+
+    private Task PublishUpdateAsync(BaseItem item, CancellationToken cancellationToken)
+        => PublishActivityAsync(item, b => b.BuildUpdateActivity(), "Update", cancellationToken);
+
+    private Task PublishDeleteAsync(BaseItem item, CancellationToken cancellationToken)
+        => PublishActivityAsync(item, b => b.BuildDeleteActivity(), "Delete", cancellationToken);
+
+    private async Task PublishActivityAsync(
+        BaseItem item,
+        Func<FederationLibraryItemActivityBuilder, object> buildActivity,
+        string activityType,
+        CancellationToken cancellationToken)
     {
         var config = _configManager.GetFederationConfiguration();
         if (!config.Enabled || string.IsNullOrEmpty(config.Hostname))
@@ -265,41 +278,13 @@ public sealed class FederationLibraryPublisher : IHostedService, IDisposable
             var actorUrl = config.ActorURL;
             var libraryItem = FederationLibraryItemConverter.FromBaseItem(item);
             var builder = new FederationLibraryItemActivityBuilder(libraryItem, actorUrl);
-            var activityJson = JsonSerializer.Serialize(builder.BuildActivity(), ActivityStreamsJsonOptions.Default);
+            var activityJson = JsonSerializer.Serialize(buildActivity(builder), ActivityStreamsJsonOptions.Default);
 
             await PublishToOutboxAsync(activityJson, item.Name, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to publish federation Create for {ItemName}", item.Name);
-        }
-    }
-
-    private async Task PublishDeleteAsync(BaseItem item, CancellationToken cancellationToken)
-    {
-        var config = _configManager.GetFederationConfiguration();
-        if (!config.Enabled || string.IsNullOrEmpty(config.Hostname))
-        {
-            return;
-        }
-
-        try
-        {
-            if (IsVirtualFederatedItem(item))
-            {
-                return;
-            }
-
-            var actorUrl = config.ActorURL;
-            var libraryItem = FederationLibraryItemConverter.FromBaseItem(item);
-            var builder = new FederationLibraryItemActivityBuilder(libraryItem, actorUrl);
-            var activityJson = JsonSerializer.Serialize(builder.BuildDeleteActivity(), ActivityStreamsJsonOptions.Default);
-
-            await PublishToOutboxAsync(activityJson, item.Name, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to publish federation Delete for {ItemName}", item.Name);
+            _logger.LogError(ex, "Failed to publish federation {ActivityType} for {ItemName}", activityType, item.Name);
         }
     }
 

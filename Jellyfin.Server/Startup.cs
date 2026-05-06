@@ -12,6 +12,7 @@ using Jellyfin.LiveTv.Extensions;
 using Jellyfin.LiveTv.Recordings;
 using Jellyfin.MediaEncoding.Hls.Extensions;
 using Jellyfin.Networking;
+using Jellyfin.Networking.Federation;
 using Jellyfin.Networking.HappyEyeballs;
 using Jellyfin.Server.Extensions;
 using Jellyfin.Server.HealthChecks;
@@ -122,6 +123,18 @@ namespace Jellyfin.Server
                     c.DefaultRequestHeaders.Accept.Add(acceptAnyHeader);
                 })
                 .ConfigurePrimaryHttpMessageHandler(defaultHttpClientHandlerDelegate);
+
+            services.AddHttpClient(NamedClient.Federation, c =>
+                {
+                    c.DefaultRequestHeaders.UserAgent.Add(productHeader);
+                    c.DefaultRequestHeaders.Accept.Add(acceptJsonHeader);
+                })
+                .ConfigurePrimaryHttpMessageHandler((_) => new SocketsHttpHandler()
+                {
+                    AutomaticDecompression = DecompressionMethods.All,
+                    RequestHeaderEncodingSelector = (_, _) => Encoding.UTF8,
+                    ConnectCallback = FederationSsrfGuard.OnConnectAsync
+                });
 
             services.AddHealthChecks()
                 .AddCheck<DbContextFactoryHealthCheck<JellyfinDbContext>>(nameof(JellyfinDbContext));

@@ -24,5 +24,11 @@ namespace MediaBrowser.Common.Net
         /// Non happy eyeballs implementation.
         /// </summary>
         public const string DirectIp = nameof(DirectIp);
+
+        /// <summary>
+        /// Gets the value for the federation named http client which rejects connections to
+        /// private/loopback addresses at connect time, closing the DNS rebinding window.
+        /// </summary>
+        public const string Federation = nameof(Federation);
     }
 }

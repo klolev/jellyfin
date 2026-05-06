@@ -37,6 +37,20 @@ public class FederationLibraryItemActivityBuilder
     }
 
     /// <summary>
+    /// Builds an Update activity for the library item.
+    /// </summary>
+    /// <returns>The Update activity.</returns>
+    public Update BuildUpdateActivity()
+    {
+        return new Update
+        {
+            Id = $"{_actorUrl}#update-{_item.SourceId}",
+            Actor = _actorUrl,
+            Object = BuildVideo()
+        };
+    }
+
+    /// <summary>
     /// Builds a Delete activity for the library item.
     /// </summary>
     /// <returns>The Delete activity.</returns>

@@ -73,25 +73,19 @@ public sealed class FederatedMediaSourceProvider : IMediaSourceProvider
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            var sources = new List<MediaSourceInfo>(rows.Count);
-            foreach (var row in rows)
+            return rows.Select(row => new MediaSourceInfo
             {
-                sources.Add(new MediaSourceInfo
-                {
-                    Id = $"federation:{row.ActorId}:{row.SourceId:N}",
-                    Name = $"Remote @ {GetHostname(row.Actor.Url)}",
-                    Type = MediaSourceType.Default,
-                    Protocol = MediaProtocol.Http,
-                    IsRemote = true,
-                    RequiresOpening = true,
-                    OpenToken = BuildOpenToken(row.ActorId, row.SourceId),
-                    SupportsDirectPlay = true,
-                    SupportsDirectStream = true,
-                    SupportsTranscoding = false
-                });
-            }
-
-            return sources;
+                Id = $"federation:{row.ActorId}:{row.SourceId:N}",
+                Name = $"Remote @ {GetHostname(row.Actor.Url)}",
+                Type = MediaSourceType.Default,
+                Protocol = MediaProtocol.Http,
+                IsRemote = true,
+                RequiresOpening = true,
+                OpenToken = BuildOpenToken(row.ActorId, row.SourceId),
+                SupportsDirectPlay = true,
+                SupportsDirectStream = true,
+                SupportsTranscoding = false
+            }).ToList<MediaSourceInfo>();
         }
     }
 
