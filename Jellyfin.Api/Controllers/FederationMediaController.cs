@@ -119,16 +119,15 @@ public class FederationMediaController : BaseJellyfinApiController
                 return NotFound();
             }
 
-            var rawToken = await _tokenService.IssueAsync(follower.Id, itemId, DefaultTokenTtl, HttpContext.RequestAborted).ConfigureAwait(false);
-            var expiresAt = DateTime.UtcNow.Add(DefaultTokenTtl);
+            var issued = await _tokenService.IssueAsync(follower.Id, itemId, DefaultTokenTtl, HttpContext.RequestAborted).ConfigureAwait(false);
 
             var config = _configManager.GetFederationConfiguration();
-            var streamUrl = $"{config.BaseURL}/Federation/Media/{itemId:N}/Stream?token={rawToken}";
+            var streamUrl = $"{config.BaseURL}/Federation/Media/{itemId:N}/Stream?token={issued.Token}";
 
             return Ok(new FederationStreamTokenResponse
             {
-                Token = rawToken,
-                ExpiresAt = expiresAt,
+                Token = issued.Token,
+                ExpiresAt = issued.ExpiresAt,
                 StreamUrl = streamUrl
             });
         }

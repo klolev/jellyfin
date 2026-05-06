@@ -63,7 +63,8 @@ public sealed class FederationStreamTokenServiceTests : IDisposable
     public async Task IssueAsync_PersistsHashNotRawToken()
     {
         var itemId = Guid.NewGuid();
-        var raw = await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None);
+        var issued = await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None);
+        var raw = issued.Token;
 
         Assert.False(string.IsNullOrEmpty(raw));
 
@@ -85,7 +86,7 @@ public sealed class FederationStreamTokenServiceTests : IDisposable
     public async Task ValidateAsync_ValidToken_ReturnsFollowerId()
     {
         var itemId = Guid.NewGuid();
-        var raw = await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None);
+        var raw = (await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None)).Token;
 
         var result = await _sut.ValidateAsync(raw, itemId, CancellationToken.None);
 
@@ -106,7 +107,7 @@ public sealed class FederationStreamTokenServiceTests : IDisposable
     public async Task ValidateAsync_ExpiredToken_ReturnsNull()
     {
         var itemId = Guid.NewGuid();
-        var raw = await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromMilliseconds(-1), CancellationToken.None);
+        var raw = (await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromMilliseconds(-1), CancellationToken.None)).Token;
 
         var result = await _sut.ValidateAsync(raw, itemId, CancellationToken.None);
 
@@ -118,7 +119,7 @@ public sealed class FederationStreamTokenServiceTests : IDisposable
     {
         var issuedFor = Guid.NewGuid();
         var queriedAgainst = Guid.NewGuid();
-        var raw = await _sut.IssueAsync(_followerId, issuedFor, TimeSpan.FromHours(1), CancellationToken.None);
+        var raw = (await _sut.IssueAsync(_followerId, issuedFor, TimeSpan.FromHours(1), CancellationToken.None)).Token;
 
         var result = await _sut.ValidateAsync(raw, queriedAgainst, CancellationToken.None);
 
@@ -156,8 +157,8 @@ public sealed class FederationStreamTokenServiceTests : IDisposable
     public async Task IssueAsync_ReplacesExistingTokenForSameFollowerAndItem()
     {
         var itemId = Guid.NewGuid();
-        var oldToken = await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None);
-        var newToken = await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None);
+        var oldToken = (await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None)).Token;
+        var newToken = (await _sut.IssueAsync(_followerId, itemId, TimeSpan.FromHours(1), CancellationToken.None)).Token;
 
         Assert.NotEqual(oldToken, newToken);
 
@@ -174,8 +175,8 @@ public sealed class FederationStreamTokenServiceTests : IDisposable
     {
         var itemA = Guid.NewGuid();
         var itemB = Guid.NewGuid();
-        var tokenA = await _sut.IssueAsync(_followerId, itemA, TimeSpan.FromHours(1), CancellationToken.None);
-        var tokenB = await _sut.IssueAsync(_followerId, itemB, TimeSpan.FromHours(1), CancellationToken.None);
+        var tokenA = (await _sut.IssueAsync(_followerId, itemA, TimeSpan.FromHours(1), CancellationToken.None)).Token;
+        var tokenB = (await _sut.IssueAsync(_followerId, itemB, TimeSpan.FromHours(1), CancellationToken.None)).Token;
 
         Assert.Equal(_followerId, await _sut.ValidateAsync(tokenA, itemA, CancellationToken.None));
         Assert.Equal(_followerId, await _sut.ValidateAsync(tokenB, itemB, CancellationToken.None));

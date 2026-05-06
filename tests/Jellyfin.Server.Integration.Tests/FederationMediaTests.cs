@@ -192,7 +192,8 @@ public class FederationMediaTests : IClassFixture<JellyfinApplicationFactory>
             using (var scope = _factory.Services.CreateScope())
             {
                 var tokenService = scope.ServiceProvider.GetRequiredService<IFederationStreamTokenService>();
-                rawToken = await tokenService.IssueAsync(followerId, movie.Id, TimeSpan.FromMinutes(5), default);
+                var issued = await tokenService.IssueAsync(followerId, movie.Id, TimeSpan.FromMinutes(5), default);
+                rawToken = issued.Token;
             }
 
             var client = _factory.CreateClient();

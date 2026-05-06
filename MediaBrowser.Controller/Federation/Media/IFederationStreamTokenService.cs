@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Model.Federation.Media;
 
 namespace MediaBrowser.Controller.Federation.Media;
 
@@ -19,8 +20,8 @@ public interface IFederationStreamTokenService
     /// <param name="itemId">The library item this token authorizes.</param>
     /// <param name="ttl">How long the token remains valid from issuance.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The raw token string. Not persisted in plaintext.</returns>
-    Task<string> IssueAsync(int followerId, Guid itemId, TimeSpan ttl, CancellationToken cancellationToken);
+    /// <returns>The issued token and its persisted expiry.</returns>
+    Task<IssuedToken> IssueAsync(int followerId, Guid itemId, TimeSpan ttl, CancellationToken cancellationToken);
 
     /// <summary>
     /// Validates a raw token for a specific library item.

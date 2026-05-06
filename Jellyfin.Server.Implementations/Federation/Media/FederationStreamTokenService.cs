@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities.Federation;
 using MediaBrowser.Controller.Federation.Media;
+using MediaBrowser.Model.Federation.Media;
 using Microsoft.EntityFrameworkCore;
 
 namespace Jellyfin.Server.Implementations.Federation.Media;
@@ -28,7 +29,7 @@ public sealed class FederationStreamTokenService : IFederationStreamTokenService
     }
 
     /// <inheritdoc/>
-    public async Task<string> IssueAsync(int followerId, Guid itemId, TimeSpan ttl, CancellationToken cancellationToken)
+    public async Task<IssuedToken> IssueAsync(int followerId, Guid itemId, TimeSpan ttl, CancellationToken cancellationToken)
     {
         var rawBytes = RandomNumberGenerator.GetBytes(TokenByteLength);
         var rawToken = Base64Url.EncodeToString(rawBytes);
@@ -56,7 +57,7 @@ public sealed class FederationStreamTokenService : IFederationStreamTokenService
             }
         }
 
-        return rawToken;
+        return new IssuedToken(rawToken, expiresAt);
     }
 
     /// <inheritdoc/>
