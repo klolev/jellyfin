@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Entities.Federation;
 using Jellyfin.Database.Implementations.Entities.Security;
 using Jellyfin.Database.Implementations.Interfaces;
 using Jellyfin.Database.Implementations.Locking;
@@ -167,6 +168,51 @@ public class JellyfinDbContext(DbContextOptions<JellyfinDbContext> options, ILog
     /// Gets the <see cref="DbSet{TEntity}"/>.
     /// </summary>
     public DbSet<KeyframeData> KeyframeData => Set<KeyframeData>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationActor> FederationActors => Set<FederationActor>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationFollower> FederationFollowers => Set<FederationFollower>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationFollowing> FederationFollowings => Set<FederationFollowing>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationFollowRequest> FederationFollowRequests => Set<FederationFollowRequest>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationActorQueue> FederationActorQueues => Set<FederationActorQueue>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationActorQueueItem> FederationActorQueueItems => Set<FederationActorQueueItem>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationOutboxActivity> FederationOutboxActivities => Set<FederationOutboxActivity>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationIngestedItem> FederationIngestedItems => Set<FederationIngestedItem>();
+
+    /// <summary>
+    /// Gets the <see cref="DbSet{TEntity}"/>.
+    /// </summary>
+    public DbSet<FederationStreamToken> FederationStreamTokens => Set<FederationStreamToken>();
 
     /*public DbSet<Artwork> Artwork => Set<Artwork>();
 

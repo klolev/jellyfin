@@ -60,6 +60,14 @@ public class BaseUrlRedirectionMiddleware
                 return;
             }
 
+            // Pass through .well-known requests (WebFinger, etc.)
+            if (localPath.StartsWith("/.well-known", StringComparison.OrdinalIgnoreCase))
+            {
+                httpContext.Request.Path = baseUrlPrefix + localPath;
+                await _next(httpContext).ConfigureAwait(false);
+                return;
+            }
+
             // Always redirect back to the default path if the base prefix is invalid or missing
             _logger.LogDebug("Normalizing an URL at {LocalPath}", localPath);
 

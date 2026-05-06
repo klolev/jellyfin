@@ -80,6 +80,21 @@ namespace Jellyfin.Server
             serviceCollection.AddSingleton<IEventManager, EventManager>();
 
             serviceCollection.AddSingleton<IActivityManager, ActivityManager>();
+
+            serviceCollection.AddScoped<Jellyfin.Api.Services.IVideoStreamService, Jellyfin.Api.Services.VideoStreamService>();
+            serviceCollection.AddScoped<Jellyfin.Api.Services.IHlsStreamService, Jellyfin.Api.Services.HlsStreamService>();
+            serviceCollection.AddScoped<Jellyfin.Api.Services.ISubtitleStreamService, Jellyfin.Api.Services.SubtitleStreamService>();
+
+            // Federation services
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.IFederationService, Jellyfin.Server.Implementations.Federation.FederationService>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Peers.IFederationPeerService, Jellyfin.Server.Implementations.Federation.Peers.FederationPeerService>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Peers.IFederationBackfillService, Jellyfin.Server.Implementations.Federation.Peers.FederationBackfillService>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Signing.IFederationSigningService, Jellyfin.Server.Implementations.Federation.Signing.HTTPSignatureService>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Signing.IHTTPSignatureKeyProvider, Jellyfin.Server.Implementations.Federation.Signing.LocalKeyProvider>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Webfinger.IWebfingerService, Jellyfin.Server.Implementations.Federation.Webfinger.WebfingerService>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Library.IFederationLibraryIngester, Jellyfin.Server.Implementations.Federation.Library.FederationLibraryIngester>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Media.IFederationStreamTokenService, Jellyfin.Server.Implementations.Federation.Media.FederationStreamTokenService>();
+            serviceCollection.AddSingleton<MediaBrowser.Controller.Federation.Media.IFederationServiceUserProvider, Jellyfin.Server.Implementations.Federation.Media.FederationServiceUserProvider>();
             serviceCollection.AddSingleton<IUserManager, UserManager>();
             serviceCollection.AddSingleton<IAuthenticationProvider, DefaultAuthenticationProvider>();
             serviceCollection.AddSingleton<IAuthenticationProvider, InvalidAuthProvider>();

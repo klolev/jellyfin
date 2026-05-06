@@ -12,10 +12,13 @@ using Jellyfin.LiveTv.Extensions;
 using Jellyfin.LiveTv.Recordings;
 using Jellyfin.MediaEncoding.Hls.Extensions;
 using Jellyfin.Networking;
+using Jellyfin.Networking.Federation;
 using Jellyfin.Networking.HappyEyeballs;
 using Jellyfin.Server.Extensions;
 using Jellyfin.Server.HealthChecks;
 using Jellyfin.Server.Implementations.Extensions;
+using Jellyfin.Server.Implementations.Federation;
+using Jellyfin.Server.Implementations.Federation.Media;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Extensions;
@@ -121,6 +124,18 @@ namespace Jellyfin.Server
                 })
                 .ConfigurePrimaryHttpMessageHandler(defaultHttpClientHandlerDelegate);
 
+            services.AddHttpClient(NamedClient.Federation, c =>
+                {
+                    c.DefaultRequestHeaders.UserAgent.Add(productHeader);
+                    c.DefaultRequestHeaders.Accept.Add(acceptJsonHeader);
+                })
+                .ConfigurePrimaryHttpMessageHandler((_) => new SocketsHttpHandler()
+                {
+                    AutomaticDecompression = DecompressionMethods.All,
+                    RequestHeaderEncodingSelector = (_, _) => Encoding.UTF8,
+                    ConnectCallback = FederationSsrfGuard.OnConnectAsync
+                });
+
             services.AddHealthChecks()
                 .AddCheck<DbContextFactoryHealthCheck<JellyfinDbContext>>(nameof(JellyfinDbContext));
 
@@ -133,6 +148,10 @@ namespace Jellyfin.Server
             services.AddHostedService<LibraryChangedNotifier>();
             services.AddHostedService<UserDataChangeNotifier>();
             services.AddHostedService<RecordingNotifier>();
+            services.AddHostedService<FederationConfigurationValidator>();
+            services.AddHostedService<FederationActorQueueWorker>();
+            services.AddHostedService<FederationLibraryPublisher>();
+            services.AddHostedService<FederationStreamTokenCleanupWorker>();
         }
 
         /// <summary>

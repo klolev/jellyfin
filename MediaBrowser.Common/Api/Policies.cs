@@ -94,4 +94,11 @@ public static class Policies
     /// Policy name for accessing lyric management.
     /// </summary>
     public const string LyricManagement = "LyricManagement";
+
+    /// <summary>
+    /// Policy name asserting the federation feature is enabled in configuration. When the
+    /// requirement fails the authorization middleware returns 404 so the federation surface is
+    /// indistinguishable from a server that never shipped the feature.
+    /// </summary>
+    public const string FederationEnabled = "FederationEnabled";
 }

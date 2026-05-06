@@ -10,6 +10,7 @@ using Emby.Server.Implementations;
 using Jellyfin.Api.Auth;
 using Jellyfin.Api.Auth.AnonymousLanAccessPolicy;
 using Jellyfin.Api.Auth.DefaultAuthorizationPolicy;
+using Jellyfin.Api.Auth.FederationEnabledPolicy;
 using Jellyfin.Api.Auth.FirstTimeSetupPolicy;
 using Jellyfin.Api.Auth.LocalAccessOrRequiresElevationPolicy;
 using Jellyfin.Api.Auth.SyncPlayAccessPolicy;
@@ -59,6 +60,8 @@ namespace Jellyfin.Server.Extensions
             serviceCollection.AddSingleton<IAuthorizationHandler, AnonymousLanAccessHandler>();
             serviceCollection.AddSingleton<IAuthorizationHandler, SyncPlayAccessHandler>();
             serviceCollection.AddSingleton<IAuthorizationHandler, LocalAccessOrRequiresElevationHandler>();
+            serviceCollection.AddSingleton<IAuthorizationHandler, FederationEnabledHandler>();
+            serviceCollection.AddSingleton<IAuthorizationMiddlewareResultHandler, FederationEnabledAuthorizationMiddlewareResultHandler>();
 
             return serviceCollection.AddAuthorizationCore(options =>
             {
@@ -87,6 +90,7 @@ namespace Jellyfin.Server.Extensions
                     Policies.RequiresElevation,
                     policy => policy.AddAuthenticationSchemes(AuthenticationSchemes.CustomAuthentication)
                         .RequireClaim(ClaimTypes.Role, UserRoles.Administrator));
+                options.AddPolicy(Policies.FederationEnabled, new FederationEnabledRequirement());
             });
         }
 
